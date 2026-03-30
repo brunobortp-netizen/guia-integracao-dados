@@ -50,6 +50,12 @@ A IA DEVE fazer TODAS estas perguntas antes de avançar:
 - [ ] **Os dados vêm prontos ou precisam de tratamento?** (joins, cálculos, limpeza, normalização?)
 - [ ] **Existem regras de negócio que precisam ser aplicadas nos dados?** (classificações, agrupamentos, conversões?)
 
+### 1.5 Sobre Estado Atual do Projeto
+- [ ] **O projeto já possui tabelas com dados sample/fictícios?** (cenário muito comum: o sistema já foi construído com dados de exemplo e agora quer conectar ao ERP real)
+- [ ] **Se sim: quais tabelas já existem e qual a estrutura delas?** (listar tabelas, colunas, tipos)
+- [ ] **Podemos deletar todos os dados sample dessas tabelas para substituir pela integração real?** (perguntar explicitamente, ex: "Posso limpar os dados fictícios das tabelas CLIENTES, PEDIDOS, PRODUTOS e substituir pela importação automatizada do ERP?")
+- [ ] **Existe algum dado que NÃO deve ser deletado?** (ex: configurações, tabelas de apoio que foram preenchidas manualmente)
+
 > **PROIBIDO:** Avançar para Fase 2 sem resposta para TODAS as perguntas acima. Se o usuário não souber alguma, a IA deve ajudá-lo a descobrir ou registrar como pendência a ser investigada.
 
 ---
@@ -125,7 +131,17 @@ Grids/tabelas pesadas → Importação periódica
 - [ ] Qual o tipo? (MySQL, PostgreSQL, Oracle, SQL Server?)
 - [ ] O banco é acessível pela internet ou precisa de tunnel?
 - [ ] Existe usuário read-only?
-- [ ] Quais as queries/views que trazem os dados desejados? (o usuário fornece ou precisamos descobrir juntos?)
+- [ ] Quais as queries/views que trazem os dados desejados?
+
+**Fluxo obrigatório para descobrir as queries:**
+1. **Perguntar primeiro:** "Você já tem as queries SQL prontas ou quer que eu ajude a construir?"
+2. **Se o usuário tem queries:** usar as que ele fornecer. Validar com `LIMIT 10` antes de criar o Data Loader.
+3. **Se o usuário NÃO tem queries:** perguntar: "Quer que eu pesquise na documentação oficial do [nome do ERP/sistema] as queries e tabelas adequadas para extrair esses dados?"
+   - Se sim: buscar na internet a documentação do sistema (ex: "Sankhya tabelas financeiro", "TOTVS Protheus tabela SE1", "SAP BKPF BSEG")
+   - Apresentar ao usuário o que encontrou e validar antes de usar
+   - Se não encontrar docs: pedir para o usuário consultar o time de TI do ERP ou explorar o schema do banco juntos
+
+> **IMPORTANTE:** Nunca inventar queries baseado em suposições. Se não tem certeza da estrutura, SEMPRE validar com o usuário ou pesquisar na documentação oficial.
 
 #### Se a fonte é API REST:
 - [ ] Existe template de integração Mitra disponível? (listar com `listIntegrationTemplatesMitra`)
@@ -160,6 +176,80 @@ Grids/tabelas pesadas → Importação periódica
 - [ ] **Como mapear os nomes?** (CODPARC → ID_PARCEIRO? manter nomes originais?)
 - [ ] **Quais os tipos corretos?** (INT, VARCHAR, DECIMAL, DATE, DATETIME?)
 - [ ] **Existem JOINs necessários?** (dados vêm de várias tabelas da fonte?)
+
+#### 3.1.1 Teste Prévio Obrigatório das Queries
+
+> **REGRA OBRIGATÓRIA:** Antes de criar qualquer Data Loader ou SF de importação, a IA DEVE executar a query da fonte com `LIMIT 10` (ou equivalente) para validar que retorna o esperado.
+
+**Fluxo obrigatório:**
+1. Executar a query com LIMIT para inspecionar os dados reais
+2. Apresentar ao usuário: "A query retorna essas colunas com esses tipos: [lista]. Está correto?"
+3. Só depois de confirmado: criar o Data Loader
+
+**Exemplo via SF SQL temporária para teste (ou via Data Loader com `runWhenCreate: false` e depois inspecionar a IMP_):**
+```sql
+-- Testar query da fonte via SF SQL com jdbcId externo
+SELECT * FROM PEDIDOS_ERP WHERE 1=1 LIMIT 10
+```
+
+#### 3.1.2 Mapeamento e Validação de Tipos (Cenário Sample → Produção)
+
+> **CENÁRIO CRÍTICO:** Se o projeto já tem tabelas com dados sample, é OBRIGATÓRIO validar a compatibilidade de tipos antes de importar dados reais. Ignorar isso causa bugs silenciosos (ex: IDs não populados porque a coluna era INT mas a query retorna VARCHAR).
+
+**Fluxo obrigatório quando existem tabelas sample:**
+
+1. **Listar estrutura das tabelas existentes:**
+```sql
+-- Via SF SQL no banco do projeto (jdbcId = 1)
+DESCRIBE CLIENTES;
+-- ou
+SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_NAME = 'CLIENTES'
+ORDER BY ORDINAL_POSITION;
+```
+
+2. **Comparar com o retorno da query da fonte (do LIMIT 10):**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  DE-PARA: Query Fonte → Tabela Existente                       │
+├─────────────┬──────────────┬──────────────┬────────────────────┤
+│ Coluna ERP  │ Tipo ERP     │ Coluna Mitra │ Tipo Mitra         │
+├─────────────┼──────────────┼──────────────┼────────────────────┤
+│ CODPARC     │ VARCHAR(20)  │ ID           │ INT  ⚠️ INCOMP.    │
+│ RAZAO       │ VARCHAR(200) │ NOME         │ VARCHAR(100) ⚠️    │
+│ DT_CAD      │ DATETIME     │ DT_CADASTRO  │ DATE  ⚠️ PREC.    │
+│ ATIVO       │ CHAR(1)      │ (não existe) │ — CRIAR            │
+└─────────────┴──────────────┴──────────────┴────────────────────┘
+```
+
+3. **Apresentar ao usuário e pedir confirmação:**
+   - "Encontrei essas incompatibilidades de tipo. Posso ajustar as tabelas existentes com ALTER TABLE?"
+   - "A coluna CODPARC é VARCHAR no ERP mas INT na sua tabela. Posso alterar para VARCHAR(20)?"
+   - "A coluna ATIVO não existe na sua tabela. Posso adicioná-la?"
+
+4. **Executar os ajustes ANTES de importar:**
+```javascript
+// Ajustar tipos incompatíveis
+await runDdlMitra({ projectId, sql: 'ALTER TABLE CLIENTES MODIFY ID VARCHAR(20);' });
+
+// Adicionar colunas faltantes
+await runDdlMitra({ projectId, sql: 'ALTER TABLE CLIENTES ADD COLUMN ATIVO CHAR(1) DEFAULT "S";' });
+```
+
+5. **Limpar dados sample (com confirmação do usuário):**
+```javascript
+// SOMENTE após confirmação explícita do usuário
+await runDmlMitra({ projectId, sql: 'DELETE FROM CLIENTES;' });
+await runDmlMitra({ projectId, sql: 'DELETE FROM PEDIDOS;' });
+// etc.
+```
+
+> **PROIBIDO:**
+> - Nunca ignorar incompatibilidades de tipo silenciosamente. Se a coluna da fonte é VARCHAR e a tabela é INT, a importação pode falhar ou perder dados SEM erro visível.
+> - Nunca deletar dados sample sem perguntar ao usuário.
+> - Nunca pular colunas da query fonte sem informar o usuário (ex: "a query retorna CODPARC mas não vou importar porque não tem coluna correspondente" — ERRADO, deve perguntar).
 
 ### 3.2 Estratégia de Registros Deletados
 
@@ -832,6 +922,18 @@ for (let ano = anoInicio; ano <= anoFim; ano++) {
 
 > **PROIBIDO: fetch/axios em SF JavaScript**
 > Nunca usar fetch ou axios dentro de SF JAVASCRIPT para chamar APIs externas. Usar SF tipo INTEGRATION. Para APIs Mitra, usar `require('mitra-sdk')`.
+
+> **PROIBIDO: Importar sem testar a query antes**
+> Nunca criar Data Loader e executar diretamente sem antes rodar a query com LIMIT 10 para validar colunas, tipos e dados retornados. Sempre mostrar o resultado ao usuário antes de prosseguir.
+
+> **PROIBIDO: Ignorar incompatibilidade de tipos silenciosamente**
+> Se a tabela existente tem coluna INT mas a query retorna VARCHAR (ou qualquer incompatibilidade), a IA DEVE informar o usuário e propor ALTER TABLE. Nunca prosseguir esperando que "vai funcionar".
+
+> **PROIBIDO: Deixar dados sample ao importar dados reais**
+> Quando o projeto transiciona de dados sample para integração real, a IA DEVE perguntar se pode deletar os dados fictícios. Nunca misturar dados sample com dados reais importados.
+
+> **PROIBIDO: Inventar queries sem validação**
+> Se a IA não tem certeza da estrutura do banco do ERP/sistema fonte, NUNCA inventar nomes de tabelas ou colunas. Perguntar ao usuário, pesquisar na documentação oficial, ou explorar o schema juntos.
 
 ---
 
