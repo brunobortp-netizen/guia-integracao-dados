@@ -4,6 +4,28 @@
 
 ---
 
+## Modo de Operação: Integração Nova vs Revisão de Existente
+
+> **REGRA CRÍTICA:** Este protocolo se aplica TANTO para criar integrações novas QUANTO para revisar/corrigir integrações já implementadas. Em NENHUM cenário a IA pode sair codando sem alinhar.
+
+### Se o pedido é CRIAR uma integração nova:
+→ Seguir Fases 1 → 2 → 3 → 4 → 5 sequencialmente.
+
+### Se o pedido é REVISAR ou CORRIGIR uma integração existente:
+
+**A IA DEVE seguir este fluxo antes de alterar qualquer código:**
+
+1. **Auditar:** Levantar tudo que já existe (SFs, Data Loaders, crons, tabelas, queries) e comparar com as regras deste guia
+2. **Listar problemas:** Apresentar ao usuário uma lista clara de cada item que está em desacordo com as boas práticas, explicando o risco de cada um (ex: "A SF faz DELETE + INSERT sem atomicidade — se um usuário acessar durante a importação, verá dados vazios")
+3. **Propor correções:** Para cada problema, sugerir a correção e perguntar ao usuário se concorda
+4. **Alinhar itens pendentes:** Verificar se as Fases 1-3 foram cobertas na integração atual — se não (ex: nunca discutiram tratamento de deletados, não tem tela de logs), levantar como pendência e alinhar com o usuário
+5. **Checkpoint:** Gerar o Contrato de Integração revisado (Fase 4) com todas as correções planejadas e pedir confirmação explícita
+6. **Só então:** Implementar as correções aprovadas
+
+> **PROIBIDO:** Ao receber pedido de revisão/correção, sair alterando código diretamente. SEMPRE auditar → listar → alinhar → checkpoint → implementar.
+
+---
+
 ## Índice
 
 1. [Fase 1 — Discovery](#fase-1--discovery)
