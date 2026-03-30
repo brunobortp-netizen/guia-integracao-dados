@@ -147,7 +147,8 @@ Grids/tabelas pesadas → Importação periódica
 - [ ] Existe template de integração Mitra disponível? (listar com `listIntegrationTemplatesMitra`)
 - [ ] Qual a autenticação? (API Key, Bearer Token, OAuth2, Basic Auth?)
 - [ ] Qual o rate limit da API? (quantas chamadas por minuto/hora?)
-- [ ] Existe paginação? Qual o limite por chamada? (ex: Sankhya = 5.000 linhas)
+- [ ] Existe paginação? Qual o limite por chamada?
+- [ ] **Qual endpoint será utilizado?** Alinhar com o usuário — diferentes endpoints têm diferentes limites e comportamentos (ex: na Sankhya, o endpoint `DbExplorerSP.executeQuery` tem limite de 5.000 linhas por chamada, mas outros endpoints podem não ter essa restrição)
 - [ ] Qual o endpoint que retorna os dados? Existe endpoint de listagem com filtros?
 
 #### Se a fonte é CSV:
@@ -639,7 +640,7 @@ await createServerFunctionMitra({
 });
 ```
 
-**Para APIs com paginação (ex: Sankhya com limite de 5.000 linhas):**
+**Para APIs com paginação (ex: Sankhya endpoint `DbExplorerSP.executeQuery` com limite de 5.000 linhas — alinhar com o usuário qual endpoint será utilizado, pois cada um tem limites diferentes):**
 ```javascript
 // SF JAVASCRIPT que orquestra paginação
 const code = `
@@ -829,68 +830,13 @@ try {
 - Gráfico de tempo de execução para detectar degradação
 - Botão de "Executar agora" para reimportação manual
 
-### 6.4 Otimização — Mínimo de Server Functions por Dashboard
+### 6.4 Data Loader — Sempre em Lotes com Parâmetros
 
-> **REGRA OBRIGATÓRIA:** Criar a MENOR quantidade possível de Server Functions e queries. Não criar várias SFs diferentes para trazer a mesma informação repetida.
+> Veja seção **3.5 Volumetria e Batching** para o detalhamento completo e exemplos de código. Aqui reforçamos o resumo das regras:
 
-**Padrão correto:**
-```
-1 Tabela Online por entidade de domínio
-  └── 1 SF SQL por componente do dashboard (com filtros diferentes)
-       └── Cada SF referencia @TABELA_ONLINE com parâmetros diferentes
-```
-
-**Exemplo bom:**
-```sql
--- 1 Tabela Online: VW_VENDAS (centraliza JOINs)
-SELECT V.ID, V.VALOR, V.DT_VENDA, C.NOME AS CLIENTE, P.NOME AS PRODUTO
-FROM VENDAS V
-JOIN CLIENTES C ON C.ID = V.CLIENTE_ID
-JOIN PRODUTOS P ON P.ID = V.PRODUTO_ID
-WHERE {{FILTROS}}
-
--- SF para card de total: reutiliza a mesma Tabela Online
-SELECT SUM(VALOR) AS TOTAL FROM @VW_VENDAS(FILTROS="DT_VENDA >= '{{data_inicio}}'")
-
--- SF para grid de detalhes: reutiliza a MESMA Tabela Online
-SELECT * FROM @VW_VENDAS(FILTROS="DT_VENDA >= '{{data_inicio}}'") ORDER BY DT_VENDA DESC LIMIT 100
-
--- SF para gráfico mensal: reutiliza a MESMA Tabela Online
-SELECT MONTH(DT_VENDA) AS MES, SUM(VALOR) AS TOTAL
-FROM @VW_VENDAS(FILTROS="YEAR(DT_VENDA) = {{ano}}")
-GROUP BY MONTH(DT_VENDA)
-```
-
-> **PROIBIDO:** Criar 5 SFs diferentes com JOINs idênticos só mudando o GROUP BY ou filtro. Use Tabelas Online para centralizar.
-
-### 6.5 Data Loader — Sempre em Lotes com Parâmetros
-
-> **REGRA OBRIGATÓRIA:** Nunca executar uma query gigantesca de uma vez no banco do cliente. Sempre parametrizar para importar em lotes.
-
-**Por que:**
-- Uma query `SELECT * FROM PEDIDOS` com 5 milhões de linhas pode travar o ERP
-- O timeout da conexão pode estourar
-- O Data Loader cria um CSV temporário — tamanho excessivo pode causar problemas
-
-**Padrão obrigatório para volume > 50.000 registros:**
-```javascript
-// Data Loader parametrizado por mês/ano
-query: "SELECT * FROM PEDIDOS WHERE MONTH(DT_EMISSAO) = {{mes}} AND YEAR(DT_EMISSAO) = {{ano}}"
-
-// SF JavaScript orquestra os lotes
-for (let ano = anoInicio; ano <= anoFim; ano++) {
-  for (let mes = 1; mes <= 12; mes++) {
-    try {
-      await sdk.executeDataLoaderMitra({ projectId, dataLoaderId, input: { mes, ano } });
-      // upsert IMP_ -> tabela final
-    } catch (err) {
-      // log do erro, continua próximo lote
-    }
-  }
-}
-```
-
-**Para APIs com paginação:** respeitar o limite por chamada (offset + limit) e iterar.
+- **Volume > 50.000 registros:** OBRIGATÓRIO usar Data Loader com parâmetros (mês, ano, faixa de ID)
+- **APIs com paginação:** respeitar o limite por chamada (offset + limit) e iterar — alinhar com o usuário qual endpoint usar, pois cada um tem limites diferentes
+- **Nunca** executar `SELECT * FROM TABELA_GRANDE` sem parâmetros de lote
 
 ---
 
@@ -913,9 +859,6 @@ for (let ano = anoInicio; ano <= anoFim; ano++) {
 
 > **PROIBIDO: Dashboard de importação sem "Última atualização"**
 > Nunca entregar um dashboard que consome dados importados sem o indicador visível de última atualização.
-
-> **PROIBIDO: Duplicar queries/SFs desnecessariamente**
-> Nunca criar múltiplas SFs com JOINs idênticos. Usar Tabelas Online para centralizar e SFs apenas para filtros/agregações específicas.
 
 > **PROIBIDO: SFs temporárias**
 > Nunca criar e deletar Server Functions dinamicamente por execução.
