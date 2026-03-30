@@ -12,8 +12,7 @@
 4. [Fase 4 — Checkpoint de Consenso](#fase-4--checkpoint-de-consenso)
 5. [Fase 5 — Implementação](#fase-5--implementação)
 6. [Boas Práticas Obrigatórias](#boas-práticas-obrigatórias)
-7. [Anti-Patterns (Proibições)](#anti-patterns-proibições)
-8. [Referência SDK](#referência-sdk)
+7. [Referência SDK](#referência-sdk)
 
 ---
 
@@ -830,53 +829,6 @@ try {
 - Gráfico de tempo de execução para detectar degradação
 - Botão de "Executar agora" para reimportação manual
 
-### 6.4 Data Loader — Sempre em Lotes com Parâmetros
-
-> Veja seção **3.5 Volumetria e Batching** para o detalhamento completo e exemplos de código. Aqui reforçamos o resumo das regras:
-
-- **Volume > 50.000 registros:** OBRIGATÓRIO usar Data Loader com parâmetros (mês, ano, faixa de ID)
-- **APIs com paginação:** respeitar o limite por chamada (offset + limit) e iterar — alinhar com o usuário qual endpoint usar, pois cada um tem limites diferentes
-- **Nunca** executar `SELECT * FROM TABELA_GRANDE` sem parâmetros de lote
-
----
-
-## Anti-Patterns (Proibições)
-
-> **PROIBIDO: Importar via loop de INSERTs**
-> Nunca criar SF JAVASCRIPT que faz SELECT no banco externo e depois INSERT um por um em loop. Use Data Loader (JDBC) ou LOAD DATA (CSV).
-
-> **PROIBIDO: Query sem limites no banco do cliente**
-> Nunca executar `SELECT * FROM TABELA_GRANDE` sem parâmetros de lote no Data Loader. Sempre usar parâmetros (mês, ano, faixa de ID) para limitar cada execução.
-
-> **PROIBIDO: DELETE + INSERT sem atomicidade**
-> Nunca fazer `TRUNCATE/DELETE` seguido de `INSERT` em tabelas que estão sendo consultadas por dashboards em horário comercial. Usar `ON DUPLICATE KEY UPDATE`, tabela shadow ou flag de versão.
-
-> **PROIBIDO: Codar antes do Checkpoint**
-> Nunca iniciar implementação de integração sem ter completado TODAS as Fases 1-4 e recebido confirmação explícita do usuário.
-
-> **PROIBIDO: Dashboard de importação sem logs**
-> Nunca entregar uma integração sem tela de monitoramento de logs.
-
-> **PROIBIDO: Dashboard de importação sem "Última atualização"**
-> Nunca entregar um dashboard que consome dados importados sem o indicador visível de última atualização.
-
-> **PROIBIDO: SFs temporárias**
-> Nunca criar e deletar Server Functions dinamicamente por execução.
-
-> **PROIBIDO: fetch/axios em SF JavaScript**
-> Nunca usar fetch ou axios dentro de SF JAVASCRIPT para chamar APIs externas. Usar SF tipo INTEGRATION. Para APIs Mitra, usar `require('mitra-sdk')`.
-
-> **PROIBIDO: Importar sem testar a query antes**
-> Nunca criar Data Loader e executar diretamente sem antes rodar a query com LIMIT 10 para validar colunas, tipos e dados retornados. Sempre mostrar o resultado ao usuário antes de prosseguir.
-
-> **PROIBIDO: Ignorar incompatibilidade de tipos silenciosamente**
-> Se a tabela existente tem coluna INT mas a query retorna VARCHAR (ou qualquer incompatibilidade), a IA DEVE informar o usuário e propor ALTER TABLE. Nunca prosseguir esperando que "vai funcionar".
-
-> **PROIBIDO: Deixar dados sample ao importar dados reais**
-> Quando o projeto transiciona de dados sample para integração real, a IA DEVE perguntar se pode deletar os dados fictícios. Nunca misturar dados sample com dados reais importados.
-
-> **PROIBIDO: Inventar queries sem validação**
-> Se a IA não tem certeza da estrutura do banco do ERP/sistema fonte, NUNCA inventar nomes de tabelas ou colunas. Perguntar ao usuário, pesquisar na documentação oficial, ou explorar o schema juntos.
 
 ---
 
@@ -966,46 +918,3 @@ segundo minuto hora diaMes mes diaSemana
   0      */5     *     *    *      *       → a cada 5min (mínimo permitido)
 ```
 
----
-
-## Diagrama Resumo do Fluxo Completo
-
-```
-╔═══════════════════════════════════════════════════════════════╗
-║                                                               ║
-║   FASE 1: DISCOVERY                                          ║
-║   ├── Fonte? Volume? Frequência? Tolerância?                 ║
-║   └── TODAS as perguntas respondidas? ──NO──▶ VOLTA          ║
-║                    │ YES                                      ║
-║                    ▼                                          ║
-║   FASE 2: DECISÃO DE ARQUITETURA                             ║
-║   ├── Apresentar 3 modelos com prós/contras                  ║
-║   ├── Subperguntas por tipo de fonte                         ║
-║   └── Usuário escolheu modelo? ──NO──▶ DISCUTIR MAIS        ║
-║                    │ YES                                      ║
-║                    ▼                                          ║
-║   FASE 3: ALINHAMENTO TÉCNICO                                ║
-║   ├── 3.1 Queries e mapeamento                               ║
-║   ├── 3.2 Deletados (OBRIGATÓRIO discutir)                   ║
-║   ├── 3.3 Incrementalidade (OBRIGATÓRIO: coluna cursor)      ║
-║   ├── 3.4 Cron/frequência                                    ║
-║   ├── 3.5 Batching/volume                                    ║
-║   ├── 3.6 Logs e monitoramento                               ║
-║   └── 3.7 Atomicidade                                        ║
-║   └── TODOS alinhados? ──NO──▶ VOLTA ao item pendente        ║
-║                    │ YES                                      ║
-║                    ▼                                          ║
-║   FASE 4: CHECKPOINT                                         ║
-║   ├── Gerar Contrato de Integração                           ║
-║   └── Confirmação EXPLÍCITA? ──NO──▶ VOLTA à fase relevante  ║
-║                    │ YES                                      ║
-║                    ▼                                          ║
-║   FASE 5: IMPLEMENTAÇÃO                                      ║
-║   ├── JDBC/Integration/CSV (conforme decisão)                ║
-║   ├── Data Loader + SF orquestradora                         ║
-║   ├── Tela de logs (OBRIGATÓRIO)                             ║
-║   ├── "Última atualização" no dashboard (OBRIGATÓRIO)        ║
-║   └── Otimizar: Tabelas Online + mínimo de SFs              ║
-║                                                               ║
-╚═══════════════════════════════════════════════════════════════╝
-```
