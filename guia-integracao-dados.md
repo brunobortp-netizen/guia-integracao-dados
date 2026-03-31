@@ -494,8 +494,11 @@ await runDdlMitra({
 const code = `
 const sdk = require('mitra-sdk');
 const projectId = ${projectId};
+const tempos = {};
+const inicioTotal = Date.now();
 
 // 1. Buscar última sync via tabela de log
+let t0 = Date.now();
 const lastSyncResult = await sdk.executeServerFunctionMitra({
   projectId,
   serverFunctionId: ${sfBuscarUltimaSync},
@@ -503,15 +506,19 @@ const lastSyncResult = await sdk.executeServerFunctionMitra({
 });
 const ultimaSync = lastSyncResult?.result?.output?.rows?.[0]?.ULTIMA_SYNC || '2000-01-01 00:00:00';
 const agora = new Date().toISOString().slice(0, 19).replace('T', ' ');
+tempos.buscar_ultima_sync_ms = Date.now() - t0;
 
 // 2. Executar Data Loader incremental
+t0 = Date.now();
 await sdk.executeDataLoaderMitra({
   projectId,
   dataLoaderId: ${dataLoaderId},
   input: { ultima_sync: ultimaSync, mes: new Date().getMonth() + 1, ano: new Date().getFullYear() }
 });
+tempos.data_loader_ms = Date.now() - t0;
 
 // 3. Upsert atômico: INSERT ... ON DUPLICATE KEY UPDATE (sem DELETE!)
+t0 = Date.now();
 await sdk.runDmlMitra({
   projectId,
   sql: \`
@@ -527,17 +534,21 @@ await sdk.runDmlMitra({
       IMPORTADO_EM = CURRENT_TIMESTAMP
   \`
 });
+tempos.upsert_ms = Date.now() - t0;
+tempos.total_ms = Date.now() - inicioTotal;
 
-// 4. Log personalizado (a própria tabela de log serve como registro da última sync)
+// 4. Log personalizado com tempos por etapa
 await sdk.runDmlMitra({
   projectId,
-  sql: \`INSERT INTO LOG_IMPORTACOES (ENTIDADE, TIPO, STATUS, REGISTROS, EXECUTADO_EM)
+  sql: \`INSERT INTO LOG_IMPORTACOES (ENTIDADE, TIPO, STATUS, REGISTROS_IMPORTADOS, DURACAO_MS, ETAPAS_JSON, EXECUTADO_EM)
          VALUES ('PEDIDOS', 'INCREMENTAL', 'SUCESSO',
                  (SELECT COUNT(*) FROM IMP_IMPORTAR_PEDIDOS),
+                 \${tempos.total_ms},
+                 '\${JSON.stringify(tempos).replace(/'/g, "\\\\'")}',
                  NOW())\`
 });
 
-return { status: 'ok', registros_processados: 'ver log' };
+return { status: 'ok', tempos };
 `;
 
 await createServerFunctionMitra({
@@ -822,37 +833,52 @@ CREATE TABLE LOG_IMPORTACOES (
   MENSAGEM_ERRO TEXT,
   EXECUTADO_EM DATETIME DEFAULT NOW(),
   DURACAO_MS INT,
+  ETAPAS_JSON JSON,             -- tempos por etapa: {"data_loader_ms": 1200, "upsert_ms": 800, ...}
   PARAMETROS JSON               -- ex: {"mes": 3, "ano": 2025}
 );
 ```
 
-**A SF de importação DEVE alimentar esta tabela:**
+**A SF de importação DEVE alimentar esta tabela com tempos por etapa:**
 ```javascript
-const inicio = Date.now();
+const tempos = {};
+const inicioTotal = Date.now();
 try {
-  // ... lógica de importação ...
-  const duracao = Date.now() - inicio;
+  let t0 = Date.now();
+  // ... etapa 1: data loader ...
+  tempos.data_loader_ms = Date.now() - t0;
+
+  t0 = Date.now();
+  // ... etapa 2: upsert ...
+  tempos.upsert_ms = Date.now() - t0;
+
+  tempos.total_ms = Date.now() - inicioTotal;
   await sdk.runDmlMitra({
     projectId,
     sql: `INSERT INTO LOG_IMPORTACOES
-          (ENTIDADE, TIPO, STATUS, REGISTROS_IMPORTADOS, DURACAO_MS)
-          VALUES ('PEDIDOS', 'INCREMENTAL', 'SUCESSO', ${count}, ${duracao})`
+          (ENTIDADE, TIPO, STATUS, REGISTROS_IMPORTADOS, DURACAO_MS, ETAPAS_JSON)
+          VALUES ('PEDIDOS', 'INCREMENTAL', 'SUCESSO', ${count}, ${tempos.total_ms},
+                  '${JSON.stringify(tempos).replace(/'/g, "\\'")}')`
   });
 } catch (err) {
-  const duracao = Date.now() - inicio;
+  tempos.total_ms = Date.now() - inicioTotal;
   await sdk.runDmlMitra({
     projectId,
     sql: `INSERT INTO LOG_IMPORTACOES
-          (ENTIDADE, TIPO, STATUS, MENSAGEM_ERRO, DURACAO_MS)
-          VALUES ('PEDIDOS', 'INCREMENTAL', 'ERRO', '${err.message.replace(/'/g, "''")}', ${duracao})`
+          (ENTIDADE, TIPO, STATUS, MENSAGEM_ERRO, DURACAO_MS, ETAPAS_JSON)
+          VALUES ('PEDIDOS', 'INCREMENTAL', 'ERRO',
+                  '${err.message.replace(/'/g, "''")}', ${tempos.total_ms},
+                  '${JSON.stringify(tempos).replace(/'/g, "\\'")}')`
   });
   throw err;
 }
 ```
 
+> **Por que tempos por etapa?** Permite identificar gargalos — ex: se o Data Loader leva 15s mas o upsert leva 120s, o problema está no upsert e não na query do ERP. Sem essa granularidade, o usuário só vê "importação levou 135s" e não sabe onde otimizar.
+
 **Componentes da tela de logs:**
 - Grid com filtros por entidade, tipo, status e data
 - Indicador visual: 🟢 sucesso, 🔴 erro, 🟡 parcial
+- **Tempos por etapa:** exibir o campo `ETAPAS_JSON` de forma legível (ex: "Data Loader: 1.2s | Upsert: 0.8s | Total: 2.1s") para identificar gargalos
 - Detalhes expandíveis (mensagem de erro, parâmetros, EXECUTION_JSON)
 - Gráfico de tempo de execução para detectar degradação
 - Botão de "Executar agora" para reimportação manual
