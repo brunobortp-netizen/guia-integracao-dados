@@ -338,18 +338,11 @@ Perguntas:
 - [ ] **Qual a estratégia de lote?** (por mês? por filial? por faixa de ID?)
 
 **Exemplo de batching por mês:**
-```javascript
-// Data Loader query parametrizada
-"SELECT * FROM NFS WHERE MONTH(DT_EMISSAO) = {{mes}} AND YEAR(DT_EMISSAO) = {{ano}}"
-
-// SF JavaScript que orquestra os lotes
-for (let ano = 2020; ano <= 2025; ano++) {
-  for (let mes = 1; mes <= 12; mes++) {
-    await executeDataLoaderMitra({ projectId, dataLoaderId, input: { mes, ano } });
-    // ... upsert da IMP_ para tabela final ...
-  }
-}
+```sql
+-- Data Loader query parametrizada
+SELECT * FROM NFS WHERE MONTH(DT_EMISSAO) = {{mes}} AND YEAR(DT_EMISSAO) = {{ano}}
 ```
+A orquestração dos lotes é feita via **loop assíncrono entre SFs** (ver padrão completo na Fase 5.1 passo 4). Nunca usar `for` loop direto — estoura o timeout de 300s da SF JavaScript.
 
 - [ ] **Existe limite de linhas por query no sistema fonte?** (Sankhya = 5.000 por chamada)
 - [ ] **O banco do cliente aguenta queries que retornam muitos registros de uma vez?**
@@ -489,76 +482,150 @@ await runDdlMitra({
 });
 ```
 
-**Passo 4 — SF JavaScript de orquestração:**
+**Passo 4 — SFs de orquestração (loop assíncrono):**
+
+> **REGRA CRÍTICA — TIMEOUT:** SFs JavaScript têm timeout de 300 segundos. Um loop de batching com muitos lotes (ex: 60 meses) ESTOURA esse limite. A solução é a SF processar UM lote e disparar a si mesma assincronamente para o próximo. Cada execução tem seu próprio timeout.
+
+```
+SF importar_lote (execução 1) → processa lote {mes:1, ano:2020}
+  └── executeServerFunctionAsyncMitra → dispara ela mesma com {mes:2, ano:2020}
+       └── SF importar_lote (execução 2) → processa lote {mes:2, ano:2020}
+            └── ... até acabar os lotes
+                 └── Último lote: log de conclusão (+ RENAME se full refresh)
+```
+
+**Dois padrões conforme o tipo de importação:**
+
+#### Padrão A — Incremental (cron periódico)
+
+Upsert direto na tabela final. Cada lote é idempotente — se falhar no meio, os lotes já processados não corrompem nada.
+
 ```javascript
 const code = `
 const sdk = require('mitra-sdk');
 const projectId = ${projectId};
+const t0 = Date.now();
+
+const loteAtual = event.loteAtual || 0;
+const lotes = event.lotes;
+const entidade = event.entidade;
+const dataLoaderId = event.dataLoaderId;
+const sfId = event.sfId; // ID desta própria SF para se auto-chamar
+
+const lote = lotes[loteAtual];
 const tempos = {};
-const inicioTotal = Date.now();
 
-// 1. Buscar última sync via tabela de log
-let t0 = Date.now();
-const lastSyncResult = await sdk.executeServerFunctionMitra({
-  projectId,
-  serverFunctionId: ${sfBuscarUltimaSync},
-  input: { entidade: 'PEDIDOS' }
-});
-const ultimaSync = lastSyncResult?.result?.output?.rows?.[0]?.ULTIMA_SYNC || '2000-01-01 00:00:00';
-const agora = new Date().toISOString().slice(0, 19).replace('T', ' ');
-tempos.buscar_ultima_sync_ms = Date.now() - t0;
+// 1. Executar Data Loader do lote
+let t1 = Date.now();
+await sdk.executeDataLoaderMitra({ projectId, dataLoaderId, input: lote });
+tempos.data_loader_ms = Date.now() - t1;
 
-// 2. Executar Data Loader incremental
-t0 = Date.now();
-await sdk.executeDataLoaderMitra({
-  projectId,
-  dataLoaderId: ${dataLoaderId},
-  input: { ultima_sync: ultimaSync, mes: new Date().getMonth() + 1, ano: new Date().getFullYear() }
-});
-tempos.data_loader_ms = Date.now() - t0;
-
-// 3. Upsert atômico: INSERT ... ON DUPLICATE KEY UPDATE (sem DELETE!)
-t0 = Date.now();
+// 2. Upsert atômico direto na tabela final
+t1 = Date.now();
 await sdk.runDmlMitra({
   projectId,
-  sql: \`
-    INSERT INTO PEDIDOS (ID, CLIENTE_ID, VALOR, STATUS, DT_EMISSAO, DT_ALTERACAO)
-    SELECT ID, CLIENTE_ID, VALOR, STATUS, DT_EMISSAO, DT_ALTERACAO
-    FROM IMP_IMPORTAR_PEDIDOS
-    ON DUPLICATE KEY UPDATE
-      CLIENTE_ID = VALUES(CLIENTE_ID),
-      VALOR = VALUES(VALOR),
-      STATUS = VALUES(STATUS),
-      DT_EMISSAO = VALUES(DT_EMISSAO),
-      DT_ALTERACAO = VALUES(DT_ALTERACAO),
-      IMPORTADO_EM = CURRENT_TIMESTAMP
-  \`
+  sql: \`INSERT INTO PEDIDOS (ID, CLIENTE_ID, VALOR, STATUS, DT_EMISSAO, DT_ALTERACAO)
+         SELECT ID, CLIENTE_ID, VALOR, STATUS, DT_EMISSAO, DT_ALTERACAO
+         FROM IMP_IMPORTAR_PEDIDOS
+         ON DUPLICATE KEY UPDATE
+           CLIENTE_ID = VALUES(CLIENTE_ID), VALOR = VALUES(VALOR),
+           STATUS = VALUES(STATUS), DT_EMISSAO = VALUES(DT_EMISSAO),
+           DT_ALTERACAO = VALUES(DT_ALTERACAO), IMPORTADO_EM = CURRENT_TIMESTAMP\`
 });
-tempos.upsert_ms = Date.now() - t0;
-tempos.total_ms = Date.now() - inicioTotal;
+tempos.upsert_ms = Date.now() - t1;
+tempos.total_ms = Date.now() - t0;
 
-// 4. Log personalizado com tempos por etapa
-await sdk.runDmlMitra({
-  projectId,
-  sql: \`INSERT INTO LOG_IMPORTACOES (ENTIDADE, TIPO, STATUS, REGISTROS_IMPORTADOS, DURACAO_MS, ETAPAS_JSON, EXECUTADO_EM)
-         VALUES ('PEDIDOS', 'INCREMENTAL', 'SUCESSO',
+// 3. Log deste lote
+await sdk.runDmlMitra({ projectId,
+  sql: \`INSERT INTO LOG_IMPORTACOES (ENTIDADE, TIPO, STATUS, REGISTROS_IMPORTADOS, DURACAO_MS, ETAPAS_JSON)
+         VALUES ('\${entidade}', 'INCREMENTAL', 'SUCESSO',
                  (SELECT COUNT(*) FROM IMP_IMPORTAR_PEDIDOS),
                  \${tempos.total_ms},
-                 '\${JSON.stringify(tempos).replace(/'/g, "\\\\'")}',
-                 NOW())\`
+                 '\${JSON.stringify({...tempos, lote, loteAtual, totalLotes: lotes.length}).replace(/'/g, "\\\\\\\\'")}')\`
 });
 
-return { status: 'ok', tempos };
+// 4. Próximo lote ou finalizar
+if (loteAtual + 1 < lotes.length) {
+  await sdk.executeServerFunctionAsyncMitra({
+    projectId, serverFunctionId: sfId,
+    input: { ...event, loteAtual: loteAtual + 1 }
+  });
+} else {
+  await sdk.runDmlMitra({ projectId,
+    sql: \`INSERT INTO LOG_IMPORTACOES (ENTIDADE, TIPO, STATUS, ETAPAS_JSON)
+           VALUES ('\${entidade}', 'BATCH_FINAL', 'SUCESSO',
+                   '{"total_lotes": \${lotes.length}, "concluido": true}')\`
+  });
+}
+
+return { lote: loteAtual, total: lotes.length, tempos };
 `;
 
 await createServerFunctionMitra({
   projectId,
-  name: 'cron_importar_pedidos',
+  name: 'importar_lote_pedidos',
   type: 'JAVASCRIPT',
   code,
-  description: 'Importação incremental de pedidos do ERP'
+  description: 'Importa 1 lote de pedidos e dispara o próximo (loop assíncrono)'
 });
 ```
+
+#### Padrão B — Full Refresh (carga inicial / substituição total)
+
+Usa **tabela shadow** para garantir transação. Todos os lotes importam na shadow. Só no último lote faz `RENAME TABLE` atômico. Se falhar no meio, a tabela de produção fica intacta.
+
+A diferença do Padrão A é apenas:
+```javascript
+// Upsert vai pra SHADOW ao invés da tabela final
+await sdk.runDmlMitra({ projectId,
+  sql: `INSERT INTO PEDIDOS_SHADOW (...) SELECT ... FROM IMP_IMPORTAR_PEDIDOS
+        ON DUPLICATE KEY UPDATE ...`
+});
+
+// No ÚLTIMO lote: swap atômico
+if (loteAtual + 1 >= lotes.length) {
+  await sdk.runDmlMitra({ projectId,
+    sql: `RENAME TABLE PEDIDOS TO PEDIDOS_OLD, PEDIDOS_SHADOW TO PEDIDOS`
+  });
+  await sdk.runDdlMitra({ projectId, sql: `DROP TABLE PEDIDOS_OLD` });
+  await sdk.runDdlMitra({ projectId, sql: `CREATE TABLE PEDIDOS_SHADOW LIKE PEDIDOS` });
+}
+```
+
+> **Quando usar cada padrão:**
+> | Cenário | Padrão | Por quê |
+> |---------|--------|---------|
+> | Cron incremental (poucos registros novos) | A — Direto | Upsert é idempotente, falha parcial não corrompe |
+> | Carga inicial / full refresh | B — Shadow | Dados parciais na produção = problema, shadow protege |
+> | Full refresh noturno (sem usuários) | A ou B | Se ninguém acessa, risco é baixo — B se quiser segurança total |
+
+#### Disparando a cadeia (primeira chamada)
+
+Do frontend ou de outra SF:
+```javascript
+// Montar array de lotes
+const lotes = [];
+for (let ano = 2020; ano <= 2025; ano++) {
+  for (let mes = 1; mes <= 12; mes++) {
+    lotes.push({ mes, ano, ultima_sync: '2000-01-01' });
+  }
+}
+
+// Disparar primeiro lote (async — não trava o frontend)
+await executeServerFunctionAsyncMitra({
+  projectId,
+  serverFunctionId: sfImportarLoteId,
+  input: {
+    lotes,
+    loteAtual: 0,
+    entidade: 'PEDIDOS',
+    dataLoaderId: 5,
+    sfId: sfImportarLoteId  // passa o próprio ID para se auto-chamar
+  }
+});
+```
+
+> **PROIBIDO:** Usar `for` loop direto dentro de uma única SF JavaScript para iterar lotes de Data Loader. O timeout de 300s vai estourar. Sempre usar o padrão de loop assíncrono (SF que dispara a si mesma via `executeServerFunctionAsyncMitra`).
 
 **Passo 5 — Configurar Cron:**
 ```javascript
@@ -739,6 +806,7 @@ DROP TABLE PEDIDOS_OLD;
 -- 4. Recria shadow vazia para próximo ciclo
 CREATE TABLE PEDIDOS_SHADOW LIKE PEDIDOS;
 ```
+> Para full refresh com batching (loop assíncrono), ver **Fase 5.1 Passo 4 — Padrão B**. Todos os lotes importam na shadow, e o `RENAME TABLE` atômico só acontece no último lote.
 
 **Opção C — Flag de versão:**
 ```sql
