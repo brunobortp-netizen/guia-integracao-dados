@@ -495,9 +495,13 @@ const code = `
 const sdk = require('mitra-sdk');
 const projectId = ${projectId};
 
-// 1. Buscar última sync
-const lastSync = await sdk.getVariableMitra({ projectId, key: 'PEDIDOS_LAST_SYNC' });
-const ultimaSync = lastSync?.result?.value || '2000-01-01 00:00:00';
+// 1. Buscar última sync via tabela de log
+const lastSyncResult = await sdk.executeServerFunctionMitra({
+  projectId,
+  serverFunctionId: ${sfBuscarUltimaSync},
+  input: { entidade: 'PEDIDOS' }
+});
+const ultimaSync = lastSyncResult?.result?.output?.rows?.[0]?.ULTIMA_SYNC || '2000-01-01 00:00:00';
 const agora = new Date().toISOString().slice(0, 19).replace('T', ' ');
 
 // 2. Executar Data Loader incremental
@@ -524,10 +528,7 @@ await sdk.runDmlMitra({
   \`
 });
 
-// 4. Atualizar variável de última sync
-await sdk.setVariableMitra({ projectId, key: 'PEDIDOS_LAST_SYNC', value: agora });
-
-// 5. Log personalizado
+// 4. Log personalizado (a própria tabela de log serve como registro da última sync)
 await sdk.runDmlMitra({
   projectId,
   sql: \`INSERT INTO LOG_IMPORTACOES (ENTIDADE, TIPO, STATUS, REGISTROS, EXECUTADO_EM)
@@ -747,21 +748,26 @@ DELETE FROM PEDIDOS WHERE VERSAO < (SELECT MAX(VERSAO) FROM PEDIDOS);
 
 **Implementação:**
 
-1. A SF de importação atualiza uma variável ao final:
-```javascript
-await sdk.setVariableMitra({
-  projectId,
-  key: 'ULTIMA_SYNC_PEDIDOS',
-  value: new Date().toISOString()
-});
+1. Criar uma SF SQL para consultar a última importação bem-sucedida (usa a tabela `LOG_IMPORTACOES` que já é alimentada pela SF de importação):
+```sql
+-- SF SQL: buscar_ultima_sync (jdbcId = 1)
+SELECT EXECUTADO_EM AS ULTIMA_SYNC
+FROM LOG_IMPORTACOES
+WHERE ENTIDADE = '{{entidade}}' AND STATUS = 'SUCESSO'
+ORDER BY EXECUTADO_EM DESC
+LIMIT 1
 ```
 
-2. O frontend lê e exibe:
+2. O frontend chama essa SF e exibe:
 ```typescript
-import { getVariableMitra } from 'mitra-interactions-sdk';
+import { executeServerFunctionMitra } from 'mitra-interactions-sdk';
 
-const v = await getVariableMitra({ projectId, key: 'ULTIMA_SYNC_PEDIDOS' });
-const lastSync = new Date(v.result.value);
+const res = await executeServerFunctionMitra({
+  projectId,
+  serverFunctionId: sfBuscarUltimaSync,
+  input: { entidade: 'PEDIDOS' }
+});
+const lastSync = new Date(res.result.output.rows[0]?.ULTIMA_SYNC);
 const diffMin = Math.round((Date.now() - lastSync.getTime()) / 60000);
 
 // Exibir: "Última atualização: há {diffMin} minutos"
@@ -905,15 +911,6 @@ try {
 | Função | Uso |
 |--------|-----|
 | `runQueryMitra({ projectId, sql })` | SELECT only. Retorna `{ rows, rowCount }`. Colunas em UPPERCASE |
-
-### Funções de Variáveis (ambos: `mitra-sdk` e `mitra-interactions-sdk`)
-
-| Função | Uso |
-|--------|-----|
-| `setVariableMitra({ projectId, key, value })` | Define variável persistente |
-| `getVariableMitra({ projectId, key })` | Lê variável |
-| `listVariablesMitra({ projectId })` | Lista todas |
-| `deleteVariableMitra({ projectId, key })` | Remove variável |
 
 ### Funções de Upload (frontend: `mitra-interactions-sdk`)
 
