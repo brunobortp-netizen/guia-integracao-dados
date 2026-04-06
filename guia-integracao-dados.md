@@ -146,11 +146,13 @@ Grids/tabelas pesadas → Importação periódica
 
 **Quando sugerir:** quando parte dos dados é leve e precisa ser real-time (contadores, status), mas outra parte é pesada (grids com milhares de linhas).
 
+> **IMPORTANTE:** Um dashboard pode ter SFs com **múltiplas fontes de dados** — informar isso ao usuário. Ex: usar API via INTEGRATION (DbExplorer do Sankhya, limite 5k) para componentes leves e SF SQL via JDBC direto no banco do ERP para componentes que precisam de mais volume. Não é necessário escolher um modelo único para o projeto inteiro.
+
 ### 2.2 Subtipos de Fonte — Perguntas Adicionais
 
 #### Se a fonte é banco de dados (JDBC):
 - [ ] Qual o tipo? (MySQL, PostgreSQL, Oracle, SQL Server?)
-- [ ] O banco é acessível pela internet ou precisa de tunnel?
+- [ ] **O banco é acessível pela internet ou está on-premise?** Se on-premise, a IA deve **proativamente sugerir o Cloudflare Tunnel** — ele cria uma conexão segura e criptografada sem precisar expor o banco na internet (sem abrir portas de entrada). Ver seção [Cloudflare Tunnel na Referência SDK](#cloudflare-tunnel--conexão-segura-a-bancos-on-premise-backend-mitra-sdk) para o fluxo completo.
 - [ ] Existe usuário read-only?
 - [ ] Quais as queries/views que trazem os dados desejados?
 
