@@ -1021,6 +1021,65 @@ try {
 | `updateOnlineTableMitra({ projectId, onlineTableId, ... })` | Atualiza |
 | `listOnlineTablesMitra({ projectId })` | Lista existentes (chamar ANTES de criar SFs) |
 
+### Cloudflare Tunnel — Conexão segura a bancos on-premise (backend: `mitra-sdk`)
+
+Quando o banco do cliente não é acessível pela internet, usar Cloudflare Tunnel para conexão segura sem expor o banco.
+
+**Fluxo obrigatório:**
+1. Explicar ao usuário: _"Para conectar seu banco de forma segura, vou criar um túnel criptografado. Ele permite que o Mitra acesse seu banco sem que você precise expô-lo na internet."_
+2. Perguntar: **IP interno** e **porta** do banco (ex: `192.168.1.100:1521`)
+3. Criar tunnel e rota via SDK
+4. Fornecer ao usuário o `tunnelToken` e instruções de instalação do `cloudflared`
+5. Instruir o usuário a criar a fonte de dados (JDBC) pela interface do Mitra
+
+> **PROIBIDO:** NUNCA peça credenciais do banco (usuário, senha, nome do banco) no chat. O usuário configura a conexão JDBC pela interface do Mitra: tela **"Database"** → **"Fontes de Dados"** → nova fonte → ativar toggle **Cloudflare** → preencher credenciais na interface segura.
+
+**Funções SDK:**
+
+| Função | Descrição |
+|--------|-----------|
+| `createTunnelMitra({ alias })` | Criar túnel — retorna `{ id, tunnelToken, status }` |
+| `listTunnelsMitra({ updateStatus? })` | Listar túneis |
+| `getTunnelMitra({ id, updateStatus? })` | Consultar túnel |
+| `syncTunnelStatusMitra({ id })` | Sincronizar status (túnel + rotas) |
+| `syncTunnelProcessStatusMitra({ id })` | Sincronizar status do processo |
+| `updateTunnelAliasMitra({ id, alias })` | Atualizar alias |
+| `deleteTunnelMitra({ id })` | Excluir túnel |
+| `addTunnelRouteMitra({ tunnelId, alias, internalDbUrl, internalDbPort })` | Adicionar rota (apontar para banco) |
+| `getTunnelRouteMitra({ routeId })` | Consultar rota |
+| `updateTunnelRouteMitra({ id, alias?, url?, port? })` | Atualizar rota |
+| `syncTunnelRouteStatusMitra({ routeId })` | Sincronizar status da rota |
+| `removeTunnelRouteMitra({ routeId })` | Remover rota |
+| `activateTunnelMitra({ id })` | Ativar túnel |
+| `deactivateTunnelMitra({ id })` | Desativar túnel |
+| `stopTunnelMitra({ id })` | Parar túnel |
+
+**Status:** túnel: `healthy` | `pending` | `error` | `inactive` · rota: `PENDING` | `RUNNING` | `ERROR` | `REMOVED` | `WAITING_TUNNEL` | `WAITING_PROCESS`
+
+**Exemplo:**
+```javascript
+// 1. Criar tunnel
+const tunnel = await createTunnelMitra({ alias: 'erp-cliente-xpto' });
+console.log('Token:', tunnel.tunnelToken);
+
+// 2. Adicionar rota
+const route = await addTunnelRouteMitra({
+  tunnelId: tunnel.id,
+  alias: 'oracle-erp',
+  internalDbUrl: '192.168.1.100',
+  internalDbPort: 1521
+});
+// NÃO crie o JDBC aqui — o usuário configura pela interface do Mitra
+```
+
+**Após criar o tunnel, informar ao usuário:**
+1. O `tunnelToken` para instalar o `cloudflared`
+2. Link da doc: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+3. Rede: apenas saída TCP nas portas 443 e 7844 (nenhuma porta de entrada)
+4. Instruções: _"Após instalar, acesse **Database** → **Fontes de Dados** → nova fonte → ative **Cloudflare** → preencha credenciais."_
+
+Após confirmação do usuário: `syncTunnelStatusMitra({ id })` para verificar `healthy`.
+
 ### Cron — Spring Cron 6 campos
 
 ```
