@@ -629,6 +629,8 @@ await executeServerFunctionAsyncMitra({
 
 > **PROIBIDO:** Usar `for` loop direto dentro de uma única SF JavaScript para iterar lotes de Data Loader. O timeout de 300s vai estourar. Sempre usar o padrão de loop assíncrono (SF que dispara a si mesma via `executeServerFunctionAsyncMitra`).
 
+> **PROIBIDO:** NUNCA criar SF JAVASCRIPT que faz SELECT no banco externo e depois INSERT um a um em loop. Use Data Loader (JDBC) ou LOAD DATA (CSV) para importar dados em massa. NUNCA criar/deletar SFs temporárias a cada execução.
+
 **Passo 5 — Configurar Cron:**
 ```javascript
 await updateServerFunctionMitra({
