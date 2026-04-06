@@ -862,37 +862,13 @@ const diffMin = Math.round((Date.now() - lastSync.getTime()) / 60000);
    - Entre 2x e 4x: atenção (amarelo)
    - Acima de 4x: alerta — importação pode estar com problema (vermelho)
 
-### 6.3 Tela de Monitoramento de Logs (OBRIGATÓRIA)
+### 6.3 Tela de Gerenciamento de Integrações (OBRIGATÓRIA)
 
-> **REGRA OBRIGATÓRIA:** Toda integração DEVE ter uma tela de acompanhamento de logs acessível ao usuário.
+> **REGRA OBRIGATÓRIA:** Todo projeto com integração de dados DEVE ter uma tela centralizada de gerenciamento. As integrações são um ponto fundamental para garantir dados coerentes e atualizados — o usuário precisa de visibilidade e controle total.
 
-**A tela deve combinar duas fontes de log:**
+#### Estrutura de dados necessária
 
-#### Fonte 1 — Logs do Data Loader (tabela `INT_DATALOADER_EXECUTION`)
-```sql
--- Query para exibir logs de execução dos Data Loaders
-SELECT
-  dle.ID,
-  dl.NAME AS DATA_LOADER,
-  dle.STATUS,
-  dle.CREATED_AT AS INICIO,
-  dle.UPDATED_AT AS FIM,
-  TIMESTAMPDIFF(SECOND, dle.CREATED_AT, dle.UPDATED_AT) AS DURACAO_SEG,
-  dle.EXECUTION_JSON
-FROM INT_DATALOADER_EXECUTION dle
-JOIN INT_DATALOADER dl ON dl.ID = dle.DATALOADER_ID
-ORDER BY dle.CREATED_AT DESC
-LIMIT 50
-```
-
-**Campos úteis do `EXECUTION_JSON` (JSON serializado do `DataLoaderExecutionDTO`):**
-- Tempos de execução
-- Metadados do CSV (tamanho, quantidade de linhas)
-- Statements SQL gerados
-- Status/erros detalhados
-- Variáveis de contexto e info do usuário
-
-#### Fonte 2 — Log personalizado (tabela própria)
+**Tabela `LOG_IMPORTACOES`** (alimentada pelas SFs de importação):
 ```sql
 CREATE TABLE LOG_IMPORTACOES (
   ID INT AUTO_INCREMENT PRIMARY KEY,
@@ -901,7 +877,7 @@ CREATE TABLE LOG_IMPORTACOES (
   STATUS VARCHAR(50),           -- 'SUCESSO', 'ERRO', 'PARCIAL'
   REGISTROS_IMPORTADOS INT,
   REGISTROS_ATUALIZADOS INT,
-  REGISTROS_DELETADOS INT,
+  REGISTROS_DESATIVADOS INT,
   MENSAGEM_ERRO TEXT,
   EXECUTADO_EM DATETIME DEFAULT NOW(),
   DURACAO_MS INT,
@@ -910,7 +886,39 @@ CREATE TABLE LOG_IMPORTACOES (
 );
 ```
 
-**A SF de importação DEVE alimentar esta tabela com tempos por etapa:**
+**Tabela `ALERTAS_INTEGRACAO`** (e-mails de notificação por entidade):
+```sql
+CREATE TABLE ALERTAS_INTEGRACAO (
+  ID INT AUTO_INCREMENT PRIMARY KEY,
+  ENTIDADE VARCHAR(100),
+  EMAIL VARCHAR(200)
+);
+```
+
+**Tabela `SF_INTEGRACAO_CODES`** (cache do código das SFs para visualização):
+```sql
+CREATE TABLE SF_INTEGRACAO_CODES (
+  SF_ID INT PRIMARY KEY,
+  CODE LONGTEXT,
+  UPDATED_AT DATETIME DEFAULT NOW() ON UPDATE NOW()
+);
+```
+
+**Logs do Data Loader** (tabela nativa `INT_DATALOADER_EXECUTION`):
+```sql
+SELECT dle.ID, dl.NAME AS DATA_LOADER, dle.STATUS,
+       dle.CREATED_AT AS INICIO, dle.UPDATED_AT AS FIM,
+       TIMESTAMPDIFF(SECOND, dle.CREATED_AT, dle.UPDATED_AT) AS DURACAO_SEG,
+       dle.EXECUTION_JSON
+FROM INT_DATALOADER_EXECUTION dle
+JOIN INT_DATALOADER dl ON dl.ID = dle.DATALOADER_ID
+ORDER BY dle.CREATED_AT DESC LIMIT 50
+```
+
+O campo `EXECUTION_JSON` contém: tempos de execução, metadados do CSV, statements SQL gerados, status/erros, variáveis de contexto.
+
+#### A SF de importação DEVE alimentar LOG_IMPORTACOES com tempos por etapa
+
 ```javascript
 const tempos = {};
 const inicioTotal = Date.now();
@@ -945,15 +953,82 @@ try {
 }
 ```
 
-> **Por que tempos por etapa?** Permite identificar gargalos — ex: se o Data Loader leva 15s mas o upsert leva 120s, o problema está no upsert e não na query do ERP. Sem essa granularidade, o usuário só vê "importação levou 135s" e não sabe onde otimizar.
+> **Por que tempos por etapa?** Permite identificar gargalos — ex: se o Data Loader leva 15s mas o upsert leva 120s, o problema está no upsert e não na query do ERP.
 
-**Componentes da tela de logs:**
-- Grid com filtros por entidade, tipo, status e data
-- Indicador visual: 🟢 sucesso, 🔴 erro, 🟡 parcial
-- **Tempos por etapa:** exibir o campo `ETAPAS_JSON` de forma legível (ex: "Data Loader: 1.2s | Upsert: 0.8s | Total: 2.1s") para identificar gargalos
-- Detalhes expandíveis (mensagem de erro, parâmetros, EXECUTION_JSON)
+#### Componentes da tela (alinhar com o usuário quais implementar)
+
+**1. Agenda de Sincronização (overview cards)**
+- Grid de cards mostrando TODAS as entidades integradas com status em tempo real
+- Cada card: ícone + nome, tipo de trigger (automático/manual), label do cron, status da última sync com badge colorido + tempo relativo ("5min atrás")
+- Clicar no card filtra a lista de entidades abaixo
+- **Auto-refresh a cada 30 segundos** via `setInterval`
+- SF auxiliar `obterUltimasSyncs`: `SELECT ENTIDADE, MAX(EXECUTADO_EM), STATUS FROM LOG_IMPORTACOES GROUP BY ENTIDADE`
+
+**2. Painéis por entidade (accordion expansível)**
+- Header: ícone + nome, badge do modelo (Full Refresh / Incremental), status da última sync, contagem de SFs, ID do Data Loader, tabela staging
+- Expandir mostra abas: Server Functions, Logs, Alertas
+- Config centralizada: array de objetos com TUDO por entidade (IDs, nomes, cores, SFs, Data Loaders)
+
+**3. Aba Server Functions**
+- Lista todas as SFs do pipeline daquela entidade com: nome, badge de role (Orquestrador/Cursor/Upsert/Query), tipo (SQL/JAVASCRIPT/INTEGRATION), ID
+- Visualizador de código expansível com botão copiar
+- Cache de código via tabela `SF_INTEGRACAO_CODES` + SF `refreshCacheSF` que chama `readServerFunctionMitra` para atualizar
+- Card do Data Loader: ID → tabela staging → JDBC de origem
+
+**4. Aba Logs**
+- Tabela com últimas 20 execuções da entidade
+- Colunas: Tipo (Full/Incremental), Status (badge colorido), Registros, Desativados, Duração (formatada: "500ms", "2.3s", "2m 45s"), Data/hora, Erro (expansível)
+- **Tempos por etapa** via `ETAPAS_JSON`: "Data Loader: 1.2s | Upsert: 0.8s | Total: 2.1s"
+- Mensagens de erro expansíveis em monospace
 - Gráfico de tempo de execução para detectar degradação
-- Botão de "Executar agora" para reimportação manual
+
+**5. Status da tabela (toggle)**
+- SELECT * da tabela destino com LIMIT 500
+- Busca que filtra em tempo real em todas as colunas
+- Header sticky, hover highlight, valores null em itálico
+- Aparece acima do conteúdo da tab ativa (é toggle, não tab)
+
+**6. Aba Alertas**
+- Sistema de notificação por e-mail por entidade
+- CRUD de e-mails via tabela `ALERTAS_INTEGRACAO`
+- Na SF de cron/orquestração: após sync, consultar alertas e chamar `sendEmailMitra` com resultado (sucesso/erro, registros, duração)
+- Badge no tab mostra contagem de alertas configurados
+
+**7. Execução manual ("Executar Agora")**
+- Botão que dispara a SF orquestradora sob demanda
+- Tenta execução sync primeiro → se timeout, fallback para async (`executeServerFunctionAsyncMitra`)
+- Feedback inline: spinner durante execução, check verde sucesso, X vermelho erro
+- Auto-reload de syncs e logs 5s após execução
+
+**8. Página de logs consolidada (rota separada)**
+- Visão de TODOS os logs de TODAS as entidades
+- Filtro por entidade
+- Auto-refresh a cada 60 segundos
+- Sem limite de 20 por entidade
+
+#### SFs auxiliares necessárias
+
+| SF | Tipo | Finalidade |
+|----|------|-----------|
+| `obterUltimasSyncs` | SQL | Última sync de cada entidade (para cards e indicador "há X min") |
+| `listarLogsPorEntidade` | SQL | Logs de uma entidade (LIMIT 20) |
+| `listarLogsImportacao` | SQL | Todos os logs consolidados |
+| `lerCodigoSF` | SQL | Ler code de SF da cache `SF_INTEGRACAO_CODES` |
+| `refreshCacheSF` | JAVASCRIPT | Atualizar cache via `readServerFunctionMitra` |
+| `statusTabela` | SQL | SELECT * da tabela destino (LIMIT 500) |
+| `listarAlertas` | SQL | Emails de alerta por entidade |
+| `adicionarAlerta` | SQL | INSERT email de alerta |
+| `removerAlerta` | SQL | DELETE email de alerta |
+
+#### Princípios de implementação
+
+- **Uma config por entidade:** array de objetos com TUDO (IDs, nomes, cores, SFs, Data Loaders) — facilita manutenção
+- **Cores únicas por entidade:** cada entidade com cor e background próprios
+- **Auto-refresh:** syncs a cada 30s, logs sob demanda
+- **Feedback imediato:** todo botão tem loading state, toda ação tem feedback visual
+- **Drill progressivo:** overview → expand → tab → detalhe (código/erro)
+- **Cache de código:** não buscar o code real a cada render — usar tabela cache + refresh manual
+- **Async fallback:** se execução manual dá timeout, cair para async transparentemente
 
 
 ---
