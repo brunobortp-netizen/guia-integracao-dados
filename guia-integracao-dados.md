@@ -486,15 +486,23 @@ await runDdlMitra({
 
 **Passo 4 — SFs de orquestração (loop assíncrono):**
 
-> **REGRA CRÍTICA — TIMEOUT:** SFs JavaScript têm timeout de 300 segundos. Um loop de batching com muitos lotes (ex: 60 meses) ESTOURA esse limite. A solução é a SF processar UM lote e disparar a si mesma assincronamente para o próximo. Cada execução tem seu próprio timeout.
+> **REGRA CRÍTICA — TIMEOUT:** SFs JavaScript têm timeout de 300 segundos. Cada operação (Data Loader e upsert) DEVE ter sua própria SF com seus próprios 300s. NUNCA execute o Data Loader e o upsert na mesma SF.
+
+> **REGRA CRÍTICA — RACE CONDITION:** NUNCA execute o MESMO Data Loader em paralelo. A tabela staging `IMP_<nome>` é TRUNCADA a cada execução. Execuções paralelas do mesmo DL causam race condition e perda de dados. Data Loaders DIFERENTES podem rodar em paralelo (cada um tem sua própria tabela `IMP_`).
 
 ```
-SF importar_lote (execução 1) → processa lote {mes:1, ano:2020}
-  └── executeServerFunctionAsyncMitra → dispara ela mesma com {mes:2, ano:2020}
-       └── SF importar_lote (execução 2) → processa lote {mes:2, ano:2020}
-            └── ... até acabar os lotes
-                 └── Último lote: log de conclusão (+ RENAME se full refresh)
+SF_DL (execução 1) → executa Data Loader lote {mes:1, ano:2020}
+  └── dispara SF_UPSERT async
+       └── SF_UPSERT → faz upsert IMP_ → tabela final
+            └── dispara SF_DL async com {mes:2, ano:2020}
+                 └── SF_DL (execução 2) → executa Data Loader lote {mes:2, ano:2020}
+                      └── dispara SF_UPSERT async
+                           └── ... até acabar os lotes
 ```
+
+**Duas SFs separadas por entidade:**
+- **SF_DL** (JAVASCRIPT): executa o Data Loader de um lote e dispara SF_UPSERT async
+- **SF_UPSERT** (JAVASCRIPT ou SQL): faz o upsert da staging para tabela final e dispara SF_DL async para o próximo lote
 
 **Dois padrões conforme o tipo de importação:**
 
@@ -502,28 +510,53 @@ SF importar_lote (execução 1) → processa lote {mes:1, ano:2020}
 
 Upsert direto na tabela final. Cada lote é idempotente — se falhar no meio, os lotes já processados não corrompem nada.
 
+**SF_DL — Executa Data Loader e dispara upsert:**
 ```javascript
-const code = `
+const codeDL = `
 const sdk = require('mitra-sdk');
 const projectId = ${projectId};
 const t0 = Date.now();
 
 const loteAtual = event.loteAtual || 0;
 const lotes = event.lotes;
-const entidade = event.entidade;
-const dataLoaderId = event.dataLoaderId;
-const sfId = event.sfId; // ID desta própria SF para se auto-chamar
-
 const lote = lotes[loteAtual];
-const tempos = {};
 
-// 1. Executar Data Loader do lote
-let t1 = Date.now();
-await sdk.executeDataLoaderMitra({ projectId, dataLoaderId, input: lote });
-tempos.data_loader_ms = Date.now() - t1;
+// Executar Data Loader do lote (usa os 300s só pra isso)
+await sdk.executeDataLoaderMitra({ projectId, dataLoaderId: event.dataLoaderId, input: lote });
+const dlMs = Date.now() - t0;
 
-// 2. Upsert atômico direto na tabela final
-t1 = Date.now();
+// Disparar SF_UPSERT async (não espera — ela tem seus próprios 300s)
+await sdk.executeServerFunctionAsyncMitra({
+  projectId,
+  serverFunctionId: event.sfUpsertId,
+  input: { ...event, loteAtual, dlMs }
+});
+
+return { lote: loteAtual, etapa: 'DL', dlMs };
+`;
+
+await createServerFunctionMitra({
+  projectId,
+  name: 'dl_pedidos',
+  type: 'JAVASCRIPT',
+  code: codeDL,
+  description: 'Executa Data Loader de 1 lote e dispara upsert'
+});
+```
+
+**SF_UPSERT — Faz upsert e dispara próximo lote:**
+```javascript
+const codeUpsert = `
+const sdk = require('mitra-sdk');
+const projectId = ${projectId};
+const t0 = Date.now();
+
+const loteAtual = event.loteAtual;
+const lotes = event.lotes;
+const lote = lotes[loteAtual];
+const entidade = event.entidade;
+
+// Upsert atômico da staging para tabela final
 await sdk.runDmlMitra({
   projectId,
   sql: \`INSERT INTO PEDIDOS (ID, CLIENTE_ID, VALOR, STATUS, DT_EMISSAO, DT_ALTERACAO)
@@ -534,10 +567,10 @@ await sdk.runDmlMitra({
            STATUS = VALUES(STATUS), DT_EMISSAO = VALUES(DT_EMISSAO),
            DT_ALTERACAO = VALUES(DT_ALTERACAO), IMPORTADO_EM = CURRENT_TIMESTAMP\`
 });
-tempos.upsert_ms = Date.now() - t1;
-tempos.total_ms = Date.now() - t0;
+const upsertMs = Date.now() - t0;
 
-// 3. Log deste lote
+// Log deste lote
+const tempos = { dl_ms: event.dlMs, upsert_ms: upsertMs, total_ms: event.dlMs + upsertMs };
 await sdk.runDmlMitra({ projectId,
   sql: \`INSERT INTO LOG_IMPORTACOES (ENTIDADE, TIPO, STATUS, REGISTROS_IMPORTADOS, DURACAO_MS, ETAPAS_JSON)
          VALUES ('\${entidade}', 'INCREMENTAL', 'SUCESSO',
@@ -546,10 +579,11 @@ await sdk.runDmlMitra({ projectId,
                  '\${JSON.stringify({...tempos, lote, loteAtual, totalLotes: lotes.length}).replace(/'/g, "\\\\\\\\'")}')\`
 });
 
-// 4. Próximo lote ou finalizar
+// Próximo lote ou finalizar
 if (loteAtual + 1 < lotes.length) {
+  // Dispara SF_DL para o próximo lote
   await sdk.executeServerFunctionAsyncMitra({
-    projectId, serverFunctionId: sfId,
+    projectId, serverFunctionId: event.sfDlId,
     input: { ...event, loteAtual: loteAtual + 1 }
   });
 } else {
@@ -560,15 +594,15 @@ if (loteAtual + 1 < lotes.length) {
   });
 }
 
-return { lote: loteAtual, total: lotes.length, tempos };
+return { lote: loteAtual, etapa: 'UPSERT', tempos };
 `;
 
 await createServerFunctionMitra({
   projectId,
-  name: 'importar_lote_pedidos',
+  name: 'upsert_pedidos',
   type: 'JAVASCRIPT',
-  code,
-  description: 'Importa 1 lote de pedidos e dispara o próximo (loop assíncrono)'
+  code: codeUpsert,
+  description: 'Faz upsert da staging e dispara próximo lote'
 });
 ```
 
@@ -576,7 +610,7 @@ await createServerFunctionMitra({
 
 Usa **tabela shadow** para garantir transação. Todos os lotes importam na shadow. Só no último lote faz `RENAME TABLE` atômico. Se falhar no meio, a tabela de produção fica intacta.
 
-A diferença do Padrão A é apenas:
+A diferença do Padrão A na SF_UPSERT é apenas:
 ```javascript
 // Upsert vai pra SHADOW ao invés da tabela final
 await sdk.runDmlMitra({ projectId,
@@ -616,18 +650,23 @@ for (let ano = 2020; ano <= 2025; ano++) {
 // Disparar primeiro lote (async — não trava o frontend)
 await executeServerFunctionAsyncMitra({
   projectId,
-  serverFunctionId: sfImportarLoteId,
+  serverFunctionId: sfDlId,  // SF_DL é o ponto de entrada
   input: {
     lotes,
     loteAtual: 0,
     entidade: 'PEDIDOS',
     dataLoaderId: 5,
-    sfId: sfImportarLoteId  // passa o próprio ID para se auto-chamar
+    sfDlId: sfDlId,          // ID da SF_DL (para o loop)
+    sfUpsertId: sfUpsertId   // ID da SF_UPSERT (para o DL disparar)
   }
 });
 ```
 
-> **PROIBIDO:** Usar `for` loop direto dentro de uma única SF JavaScript para iterar lotes de Data Loader. O timeout de 300s vai estourar. Sempre usar o padrão de loop assíncrono (SF que dispara a si mesma via `executeServerFunctionAsyncMitra`).
+> **PROIBIDO:** Executar Data Loader e upsert na MESMA SF JavaScript. Cada operação deve ter sua própria SF com seus próprios 300s de timeout. SF_DL executa o Data Loader e dispara SF_UPSERT async. SF_UPSERT faz o upsert e dispara SF_DL para o próximo lote.
+
+> **PROIBIDO:** Executar o MESMO Data Loader em paralelo. A tabela staging `IMP_<nome>` é TRUNCADA a cada execução — execuções paralelas causam race condition e perda de dados. Data Loaders DIFERENTES podem rodar em paralelo (cada um tem sua própria `IMP_`).
+
+> **PROIBIDO:** Usar `for` loop direto dentro de uma única SF JavaScript para iterar lotes de Data Loader. O timeout de 300s vai estourar. Sempre usar o padrão de loop assíncrono.
 
 > **PROIBIDO:** NUNCA criar SF JAVASCRIPT que faz SELECT no banco externo e depois INSERT um a um em loop. Use Data Loader (JDBC) ou LOAD DATA (CSV) para importar dados em massa. NUNCA criar/deletar SFs temporárias a cada execução.
 
