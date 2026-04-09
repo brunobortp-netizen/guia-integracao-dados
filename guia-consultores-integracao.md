@@ -60,7 +60,35 @@ Roda código JavaScript num ambiente isolado. Só usar quando os outros dois nã
 
 **Quando usar:** orquestrar importações em lotes, fazer loops, combinar múltiplas chamadas.
 
-**Exemplo prático:** Importar dados em lotes mensais do ERP.
+**Poder especial:** Uma SF JavaScript consegue **chamar outras SFs** (inclusive ela mesma!) para criar loops e orquestrações:
+
+```javascript
+const sdk = require('mitra-sdk');
+
+// Chamar outra SF (ex: disparar o upsert após importar)
+await sdk.executeServerFunctionMitra({
+  projectId: 12345,
+  serverFunctionId: 50,           // ID da SF que quero chamar
+  input: { entidade: 'PEDIDOS' }  // parâmetros
+});
+
+// Chamar ela mesma para o próximo lote (cria um loop!)
+await sdk.executeServerFunctionAsyncMitra({
+  projectId: 12345,
+  serverFunctionId: 40,           // ID desta própria SF
+  input: { loteAtual: 2 }        // próximo lote
+});
+// Async = não espera terminar, dispara e segue (cada execução tem seus 300s)
+```
+
+**Exemplo visual de loop:**
+```
+SF_PROCESSAR (lote 1) → faz o trabalho → dispara ela mesma com lote 2
+  SF_PROCESSAR (lote 2) → faz o trabalho → dispara ela mesma com lote 3
+    SF_PROCESSAR (lote 3) → faz o trabalho → acabou, para! ✅
+```
+
+> Isso é fundamental para importações grandes — cada execução tem seus 300s de timeout, então o loop nunca estoura.
 
 > **Regra de ouro:** Sempre prefira SQL > INTEGRATION > JAVASCRIPT. A IA já sabe disso.
 
