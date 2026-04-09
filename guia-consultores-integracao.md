@@ -16,7 +16,45 @@ Existem **3 formas** de trazer dados de fora para o Mitra:
 
 ---
 
-## 2. Os 3 tipos de Server Function (SF)
+## 2. Os 3 modelos de consumo de dados
+
+Antes de escolher qual ferramenta usar, é preciso decidir **como** os dados serão consumidos. Sempre discuta com o cliente:
+
+### Modelo A — Online (tempo real)
+
+```
+Usuário abre dashboard → SF busca dados no ERP naquele momento → Dados frescos
+```
+
+| Prós | Contras |
+|------|---------|
+| Dados sempre atualizados | Cada acesso gera carga no ERP |
+| Mais simples de implementar | Se o ERP cair, o dashboard para |
+
+**Quando usar:** poucos usuários, dados leves, ERP robusto.
+
+### Modelo B — Importação periódica
+
+```
+Cron roda a cada 30min → Importa dados para o Mitra → Dashboard lê dados locais (rápido)
+```
+
+| Prós | Contras |
+|------|---------|
+| Dashboard super rápido | Dados com delay (30min, 1h, etc.) |
+| Protege o ERP | Mais complexo de montar |
+
+**Quando usar:** muitos usuários, dashboards pesados, ERP sensível.
+
+### Modelo C — Misto
+
+Combina os dois: dados leves em tempo real, dados pesados importados.
+
+> **Dica:** Um mesmo dashboard pode ter componentes usando modelos diferentes. KPIs simples em tempo real + tabela com milhares de linhas importada.
+
+---
+
+## 3. Os 3 tipos de Server Function (SF)
 
 Server Functions são os "motores" que buscam e processam dados. Existem 3 tipos e a regra é simples: **usar sempre o mais simples que resolve o problema.**
 
@@ -94,7 +132,7 @@ SF_PROCESSAR (lote 1) → faz o trabalho → dispara ela mesma com lote 2
 
 ---
 
-## 3. Integrações (conexões com APIs)
+## 4. Integrações (conexões com APIs)
 
 Antes de criar SFs tipo INTEGRATION, é preciso configurar a **conexão** com o sistema externo.
 
@@ -131,7 +169,7 @@ A IA vai:
 
 ---
 
-## 4. Tabelas Online — centralizando queries
+## 5. Tabelas Online — centralizando queries
 
 ### O que são
 
@@ -198,7 +236,49 @@ SELECT COUNT(*) FROM @VW_VENDAS(FILTRO_DATA="1=1", FILTRO_FILIAL="1=1", FILTRO_S
 
 ---
 
-## 5. Data Loader — importando dados do banco externo
+## 6. JDBC e Cloudflare Tunnel
+
+### Conexão JDBC
+
+O Mitra **não tem nenhuma restrição** para conectar via JDBC em qualquer banco de dados (MySQL, PostgreSQL, Oracle, SQL Server, etc.). Basta informar host, porta, banco, usuário e senha.
+
+O que acontece na prática é que **a maioria dos bancos das empresas tem restrições de segurança** — firewalls, VPNs, redes internas fechadas. O banco do ERP do cliente normalmente não está aberto pra qualquer um acessar pela internet.
+
+### Como resolver o acesso
+
+Existem duas opções:
+
+**Opção 1 — Liberar o IP do Mitra no firewall (mais simples, menos seguro)**
+
+O cliente configura o firewall para permitir conexões vindas do IP do Mitra. Funciona, mas tem riscos: o banco fica parcialmente exposto na internet e depende do firewall estar bem configurado.
+
+**Opção 2 — Cloudflare Tunnel (recomendado, mais seguro)**
+
+O `cloudflared` é um pequeno programa que roda **dentro da rede do cliente**, ao lado do banco de dados. Ele abre um túnel criptografado de dentro pra fora — o Mitra se conecta pelo túnel sem que o banco precise estar exposto na internet.
+
+```
+Rede do cliente (fechada)                    Nuvem
+┌──────────────────────┐                ┌──────────┐
+│  Banco de dados      │                │          │
+│  (Oracle, MySQL...)  │                │  Mitra   │
+│         │            │                │          │
+│    cloudflared ──────┼── túnel ──────▶│          │
+│  (programa pequeno)  │  criptografado │          │
+└──────────────────────┘                └──────────┘
+   Nenhuma porta aberta!          Acesso seguro via túnel
+```
+
+**Como funciona na prática:**
+1. A IA cria o túnel e gera um **token**
+2. O cliente instala o `cloudflared` no servidor onde está o banco (é só um executável)
+3. O `cloudflared` usa o token pra se conectar ao Mitra — o túnel fica ativo
+4. O cliente configura a conexão JDBC pela interface do Mitra (com a toggle "Cloudflare" ligada)
+
+> **Segurança:** As credenciais do banco (usuário, senha) são inseridas apenas pela interface do Mitra — nunca no chat. E o banco não precisa de nenhuma porta aberta de entrada.
+
+---
+
+## 7. Data Loader — importando dados do banco externo
 
 ### O que é
 
@@ -279,7 +359,7 @@ Cada SF tem seus próprios **300 segundos**. Por isso são separadas — se foss
 
 ---
 
-## 6. Importação de CSV
+## 8. Importação de CSV
 
 ### Quando usar
 
@@ -358,86 +438,6 @@ Cada gestor sobe um CSV por mês com os dados do seu CR. O novo arquivo substitu
 - O CSV novo substitui ou acumula dados?
 - Tem alguma segmentação? (cada pessoa importa só seus dados?)
 - Qual o encoding e separador? (UTF-8? vírgula? ponto-e-vírgula?)
-
----
-
-## 7. JDBC e Cloudflare Tunnel
-
-### Conexão JDBC
-
-O Mitra **não tem nenhuma restrição** para conectar via JDBC em qualquer banco de dados (MySQL, PostgreSQL, Oracle, SQL Server, etc.). Basta informar host, porta, banco, usuário e senha.
-
-O que acontece na prática é que **a maioria dos bancos das empresas tem restrições de segurança** — firewalls, VPNs, redes internas fechadas. O banco do ERP do cliente normalmente não está aberto pra qualquer um acessar pela internet.
-
-### Como resolver o acesso
-
-Existem duas opções:
-
-**Opção 1 — Liberar o IP do Mitra no firewall (mais simples, menos seguro)**
-
-O cliente configura o firewall para permitir conexões vindas do IP do Mitra. Funciona, mas tem riscos: o banco fica parcialmente exposto na internet e depende do firewall estar bem configurado.
-
-**Opção 2 — Cloudflare Tunnel (recomendado, mais seguro)**
-
-O `cloudflared` é um pequeno programa que roda **dentro da rede do cliente**, ao lado do banco de dados. Ele abre um túnel criptografado de dentro pra fora — o Mitra se conecta pelo túnel sem que o banco precise estar exposto na internet.
-
-```
-Rede do cliente (fechada)                    Nuvem
-┌──────────────────────┐                ┌──────────┐
-│  Banco de dados      │                │          │
-│  (Oracle, MySQL...)  │                │  Mitra   │
-│         │            │                │          │
-│    cloudflared ──────┼── túnel ──────▶│          │
-│  (programa pequeno)  │  criptografado │          │
-└──────────────────────┘                └──────────┘
-   Nenhuma porta aberta!          Acesso seguro via túnel
-```
-
-**Como funciona na prática:**
-1. A IA cria o túnel e gera um **token**
-2. O cliente instala o `cloudflared` no servidor onde está o banco (é só um executável)
-3. O `cloudflared` usa o token pra se conectar ao Mitra — o túnel fica ativo
-4. O cliente configura a conexão JDBC pela interface do Mitra (com a toggle "Cloudflare" ligada)
-
-> **Segurança:** As credenciais do banco (usuário, senha) são inseridas apenas pela interface do Mitra — nunca no chat. E o banco não precisa de nenhuma porta aberta de entrada.
-
----
-
-## 8. Os 3 modelos de consumo de dados
-
-Ao iniciar uma integração, é preciso decidir **como** os dados serão consumidos. Sempre discuta com o cliente:
-
-### Modelo A — Online (tempo real)
-
-```
-Usuário abre dashboard → SF busca dados no ERP naquele momento → Dados frescos
-```
-
-| Prós | Contras |
-|------|---------|
-| Dados sempre atualizados | Cada acesso gera carga no ERP |
-| Mais simples de implementar | Se o ERP cair, o dashboard para |
-
-**Quando usar:** poucos usuários, dados leves, ERP robusto.
-
-### Modelo B — Importação periódica
-
-```
-Cron roda a cada 30min → Importa dados para o Mitra → Dashboard lê dados locais (rápido)
-```
-
-| Prós | Contras |
-|------|---------|
-| Dashboard super rápido | Dados com delay (30min, 1h, etc.) |
-| Protege o ERP | Mais complexo de montar |
-
-**Quando usar:** muitos usuários, dashboards pesados, ERP sensível.
-
-### Modelo C — Misto
-
-Combina os dois: dados leves em tempo real, dados pesados importados.
-
-> **Dica:** Um mesmo dashboard pode ter componentes usando modelos diferentes. KPIs simples em tempo real + tabela com milhares de linhas importada.
 
 ---
 
