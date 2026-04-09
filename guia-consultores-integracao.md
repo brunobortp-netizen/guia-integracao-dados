@@ -365,19 +365,41 @@ Cada gestor sobe um CSV por mês com os dados do seu CR. O novo arquivo substitu
 
 ### Conexão JDBC
 
-Conecta o Mitra direto no banco do cliente. Você informa: tipo (MySQL, Oracle, etc.), host, porta, banco, usuário e senha.
+O Mitra **não tem nenhuma restrição** para conectar via JDBC em qualquer banco de dados (MySQL, PostgreSQL, Oracle, SQL Server, etc.). Basta informar host, porta, banco, usuário e senha.
 
-### Cloudflare Tunnel — para bancos que não estão na internet
+O que acontece na prática é que **a maioria dos bancos das empresas tem restrições de segurança** — firewalls, VPNs, redes internas fechadas. O banco do ERP do cliente normalmente não está aberto pra qualquer um acessar pela internet.
 
-Se o banco do cliente está **dentro da rede interna** (on-premise), a IA cria um **túnel seguro criptografado**. Funciona assim:
+### Como resolver o acesso
+
+Existem duas opções:
+
+**Opção 1 — Liberar o IP do Mitra no firewall (mais simples, menos seguro)**
+
+O cliente configura o firewall para permitir conexões vindas do IP do Mitra. Funciona, mas tem riscos: o banco fica parcialmente exposto na internet e depende do firewall estar bem configurado.
+
+**Opção 2 — Cloudflare Tunnel (recomendado, mais seguro)**
+
+O `cloudflared` é um pequeno programa que roda **dentro da rede do cliente**, ao lado do banco de dados. Ele abre um túnel criptografado de dentro pra fora — o Mitra se conecta pelo túnel sem que o banco precise estar exposto na internet.
 
 ```
-1. IA cria o túnel e gera um token
-2. Cliente instala o "cloudflared" no servidor onde está o banco
-3. Cliente configura a conexão JDBC pela interface do Mitra (com a toggle "Cloudflare" ligada)
+Rede do cliente (fechada)                    Nuvem
+┌──────────────────────┐                ┌──────────┐
+│  Banco de dados      │                │          │
+│  (Oracle, MySQL...)  │                │  Mitra   │
+│         │            │                │          │
+│    cloudflared ──────┼── túnel ──────▶│          │
+│  (programa pequeno)  │  criptografado │          │
+└──────────────────────┘                └──────────┘
+   Nenhuma porta aberta!          Acesso seguro via túnel
 ```
 
-> **Segurança:** As credenciais do banco (usuário, senha) são inseridas apenas pela interface do Mitra — nunca no chat.
+**Como funciona na prática:**
+1. A IA cria o túnel e gera um **token**
+2. O cliente instala o `cloudflared` no servidor onde está o banco (é só um executável)
+3. O `cloudflared` usa o token pra se conectar ao Mitra — o túnel fica ativo
+4. O cliente configura a conexão JDBC pela interface do Mitra (com a toggle "Cloudflare" ligada)
+
+> **Segurança:** As credenciais do banco (usuário, senha) são inseridas apenas pela interface do Mitra — nunca no chat. E o banco não precisa de nenhuma porta aberta de entrada.
 
 ---
 
