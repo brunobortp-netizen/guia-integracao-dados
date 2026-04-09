@@ -215,7 +215,33 @@ await sdk.executeDataLoaderMitra({
 // Outra SF (separada) faz o upsert da IMP_ para a tabela final
 ```
 
-A IA cria SFs que executam o Data Loader passando um mês por vez e vão avançando automaticamente. O fluxo é: **SF_DL** executa o Data Loader de um lote → dispara **SF_UPSERT** que move os dados da IMP_ para a tabela final → dispara **SF_DL** para o próximo lote.
+A IA cria SFs que executam o Data Loader passando um mês por vez e vão avançando automaticamente:
+
+```
+Exemplo: importar pedidos de Jan/2024 a Mar/2024
+
+SF_DL (lote 1: jan/2024)
+  │  → executeDataLoaderMitra({ input: { mes: 1, ano: 2024 } })
+  │  → IMP_PEDIDOS preenchida com dados de janeiro
+  │
+  └──▶ dispara SF_UPSERT async
+        │  → INSERT INTO PEDIDOS SELECT ... FROM IMP_PEDIDOS ON DUPLICATE KEY UPDATE ...
+        │  → Janeiro salvo na tabela final ✅
+        │
+        └──▶ dispara SF_DL async (lote 2: fev/2024)
+              │  → executeDataLoaderMitra({ input: { mes: 2, ano: 2024 } })
+              │  → IMP_PEDIDOS preenchida com dados de fevereiro
+              │
+              └──▶ dispara SF_UPSERT async
+                    │  → Fevereiro salvo ✅
+                    │
+                    └──▶ dispara SF_DL async (lote 3: mar/2024)
+                          │  → Março salvo ✅
+                          │
+                          └──▶ Acabou! Log de conclusão 🎉
+```
+
+Cada SF tem seus próprios **300 segundos**. Por isso são separadas — se fosse tudo junto num loop, estouraria o tempo.
 
 ### Regras críticas
 
