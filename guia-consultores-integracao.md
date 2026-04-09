@@ -136,9 +136,34 @@ SELECT MONTH(DATA) AS MES, SUM(VALOR) FROM @VW_VENDAS(FILTROS="ANO = {{ano}}") G
 SELECT * FROM @VW_VENDAS(FILTROS="1=1") LIMIT 100
 ```
 
+### Como funcionam os filtros
+
+Os `{{VARIAVEIS}}` são placeholders que cada SF preenche na hora de usar. Você pode criar **quantas variáveis quiser** na mesma Tabela Online:
+
+```sql
+-- Tabela Online com múltiplos filtros
+SELECT V.*, C.NOME AS CLIENTE, F.NOME AS FILIAL
+FROM VENDAS V
+JOIN CLIENTES C ON C.ID = V.CLIENTE_ID
+JOIN FILIAIS F ON F.ID = V.FILIAL_ID
+WHERE {{FILTRO_DATA}} AND {{FILTRO_FILIAL}} AND {{FILTRO_STATUS}}
+```
+
+Cada SF preenche os filtros que precisa:
+```sql
+-- SF que filtra por data e filial
+SELECT * FROM @VW_VENDAS(FILTRO_DATA="DATA >= '2025-01-01'", FILTRO_FILIAL="FILIAL_ID = 3", FILTRO_STATUS="1=1")
+
+-- SF que filtra só por status (passa 1=1 nos outros)
+SELECT COUNT(*) FROM @VW_VENDAS(FILTRO_DATA="1=1", FILTRO_FILIAL="1=1", FILTRO_STATUS="STATUS = 'ABERTO'")
+```
+
+> `1=1` significa "sem filtro" — é um truque SQL que sempre é verdadeiro.
+
 ### Regras importantes
 
 - **1 Tabela Online por entidade** (ex: VW_VENDAS, VW_FINANCEIRO) — não criar uma pra cada gráfico
+- **Quantos filtros quiser:** pode ter `{{FILTRO_A}}`, `{{FILTRO_B}}`, `{{FILTRO_C}}`... sem limite
 - **Nunca colocar GROUP BY** dentro da Tabela Online — quem agrupa é a SF
 - **Para não filtrar:** passar `1=1` como valor do filtro
 - A SF que usa `@TABELA_ONLINE(...)` precisa apontar pro mesmo JDBC da Tabela Online
