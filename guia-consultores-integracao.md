@@ -285,22 +285,71 @@ Cada SF tem seus próprios **300 segundos**. Por isso são separadas — se foss
 
 Quando o dado não vem de um banco ou API, mas de um **arquivo que o usuário sobe manualmente** (planilhas de orçamento, metas, planejamento).
 
-### Fluxo
+### Como funciona (2 etapas)
 
+São duas peças que trabalham juntas:
+
+**Etapa 1 — Upload (no frontend, na tela do usuário):**
+
+O usuário escolhe o arquivo CSV na tela e o frontend faz o upload para a pasta do projeto:
+
+```typescript
+import { uploadFileLoadableMitra, executeServerFunctionMitra } from 'mitra-interactions-sdk';
+
+// 1. Usuário clicou em "Importar" e selecionou o arquivo
+await uploadFileLoadableMitra({ projectId: 12345, file: arquivoDoUsuario });
+
+// 2. Agora chama a SF que processa o arquivo
+await executeServerFunctionMitra({
+  projectId: 12345,
+  serverFunctionId: 30,  // SF tipo SQL com LOAD DATA
+  input: { mes: 3, ano: 2025, cr: 'CR001' }
+});
 ```
-Usuário seleciona CSV na tela → Upload → SF processa o arquivo → Dados na tabela
+
+> A IA monta essa tela com um botão de upload + campos para o usuário preencher (mês, ano, CR, etc.)
+
+**Etapa 2 — Processamento (SF tipo SQL com LOAD DATA):**
+
+A SF tipo SQL lê o arquivo que foi enviado e insere os dados na tabela:
+
+```sql
+-- 1. Limpar dados antigos daquele segmento
+DELETE FROM ORCAMENTO WHERE MES = {{mes}} AND ANO = {{ano}} AND CR = '{{cr}}';
+
+-- 2. Carregar dados do CSV para a tabela
+LOAD DATA LOCAL INFILE '${LOADABLE_FILE:arquivo.csv}'
+INTO TABLE ORCAMENTO
+CHARACTER SET utf8
+FIELDS TERMINATED BY ','      -- separador: vírgula
+ENCLOSED BY '"'               -- texto entre aspas
+LINES TERMINATED BY '\n'      -- quebra de linha
+IGNORE 1 LINES               -- pular cabeçalho
+(CONTA, DESCRICAO, VALOR_PLANEJADO, VALOR_REALIZADO);
+
+-- 3. Preencher colunas de contexto (vêm do input, não do CSV)
+UPDATE ORCAMENTO SET MES = {{mes}}, ANO = {{ano}}, CR = '{{cr}}'
+WHERE MES IS NULL;
+```
+
+**Fluxo visual completo:**
+```
+Gestor abre a tela → Seleciona "Março 2025" e "CR001" → Escolhe o CSV → Clica "Importar"
+  │
+  ├── Frontend faz upload do arquivo (uploadFileLoadableMitra)
+  │
+  ├── Frontend chama SF SQL (executeServerFunctionMitra)
+  │     │
+  │     ├── DELETE dados antigos de Mar/2025 + CR001
+  │     ├── LOAD DATA insere linhas novas do CSV
+  │     └── UPDATE preenche MES, ANO, CR nos registros novos
+  │
+  └── Tela mostra "Importação concluída!" ✅
 ```
 
 ### Exemplo: orçamento mensal por centro de resultado
 
-Cada gestor sobe um CSV por mês com os dados do seu CR. O novo arquivo substitui apenas os dados daquele CR naquele mês:
-
-```
-1. Upload do CSV
-2. Deleta dados antigos daquele MES + ANO + CR
-3. Importa dados novos do CSV
-4. Preenche colunas de contexto (MES, ANO, CR)
-```
+Cada gestor sobe um CSV por mês com os dados do seu CR. O novo arquivo substitui apenas os dados daquele CR naquele mês — os dados de outros gestores ficam intactos.
 
 ### O que perguntar ao cliente
 
@@ -308,6 +357,7 @@ Cada gestor sobe um CSV por mês com os dados do seu CR. O novo arquivo substitu
 - Qual a frequência? (mensal, semanal, diário?)
 - O CSV novo substitui ou acumula dados?
 - Tem alguma segmentação? (cada pessoa importa só seus dados?)
+- Qual o encoding e separador? (UTF-8? vírgula? ponto-e-vírgula?)
 
 ---
 
