@@ -291,7 +291,7 @@ São duas peças que trabalham juntas:
 
 **Etapa 1 — Upload (no frontend, na tela do usuário):**
 
-O usuário escolhe o arquivo CSV na tela e o frontend faz o upload para a pasta do projeto:
+O usuário escolhe o arquivo CSV na tela e o frontend faz o upload usando `uploadFileLoadableMitra`. "Loadable" é uma pasta especial do projeto onde ficam os arquivos que podem ser lidos pelo comando `LOAD DATA` do banco. Sem esse upload, a SF não consegue encontrar o arquivo.
 
 ```typescript
 import { uploadFileLoadableMitra, executeServerFunctionMitra } from 'mitra-interactions-sdk';
