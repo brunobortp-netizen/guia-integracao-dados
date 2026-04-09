@@ -200,7 +200,22 @@ Quando muitos usuários acessam os dashboards e você **não quer que cada acess
 SELECT * FROM PEDIDOS WHERE MONTH(DT_EMISSAO) = {{mes}} AND YEAR(DT_EMISSAO) = {{ano}}
 ```
 
-A IA cria SFs que executam o Data Loader passando um mês por vez e vão avançando automaticamente.
+**Como a SF JavaScript executa o Data Loader:**
+```javascript
+const sdk = require('mitra-sdk');
+
+// Executa o Data Loader passando os parâmetros do lote
+await sdk.executeDataLoaderMitra({
+  projectId: 12345,
+  dataLoaderId: 10,           // ID do Data Loader criado
+  input: { mes: 3, ano: 2025 } // preenche os {{mes}} e {{ano}} da query
+});
+
+// Nesse momento a tabela IMP_IMPORTAR_PEDIDOS está preenchida
+// Outra SF (separada) faz o upsert da IMP_ para a tabela final
+```
+
+A IA cria SFs que executam o Data Loader passando um mês por vez e vão avançando automaticamente. O fluxo é: **SF_DL** executa o Data Loader de um lote → dispara **SF_UPSERT** que move os dados da IMP_ para a tabela final → dispara **SF_DL** para o próximo lote.
 
 ### Regras críticas
 
