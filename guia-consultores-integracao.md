@@ -22,7 +22,7 @@ Server Functions são os "motores" que buscam e processam dados. Existem 3 tipos
 
 ### SF tipo SQL (a mais rápida — ~8ms)
 
-Roda uma query SQL direto no banco. Use para quase tudo. Aceita **SELECT, INSERT, UPDATE, DELETE** e também comandos como **LOAD DATA** (para importar CSV).
+Roda uma query SQL direto no banco. Use para quase tudo. Aceita **SELECT, INSERT, UPDATE, DELETE** e também comandos como **LOAD DATA** (para importar CSV). Timeout de **30 segundos**.
 
 **Quando usar:** consultas, filtros, inserções, atualizações, importação de CSV.
 
@@ -56,7 +56,7 @@ Body: { sql: "SELECT CODPARC, NOME FROM TGFPAR WHERE ATIVO = 'S'" }
 
 ### SF tipo JAVASCRIPT (para lógica complexa — ~2s)
 
-Roda código JavaScript num ambiente isolado. Só usar quando os outros dois não resolvem.
+Roda código JavaScript num ambiente isolado. Só usar quando os outros dois não resolvem. Timeout de **300 segundos** — por isso importações grandes precisam ser divididas em várias SFs encadeadas.
 
 **Quando usar:** orquestrar importações em lotes, fazer loops, combinar múltiplas chamadas.
 
