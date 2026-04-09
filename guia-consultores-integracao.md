@@ -351,6 +351,21 @@ SF_DL (lote 1: jan/2024)
 
 Cada SF tem seus próprios **300 segundos**. Por isso são separadas — se fosse tudo junto num loop, estouraria o tempo.
 
+### E os registros deletados no ERP?
+
+Quando você importa dados periodicamente, um problema comum é: **o que acontece quando o cliente deleta um registro no ERP?** O registro some lá, mas continua aparecendo no Mitra.
+
+Existem algumas formas de lidar com isso — sempre alinhe com o cliente qual preferem:
+
+| Estratégia | Como funciona | Quando usar |
+|-----------|---------------|-------------|
+| **Ignorar** | Registros deletados no ERP permanecem no Mitra | Dados históricos que nunca devem sumir (ex: vendas passadas) |
+| **Soft delete** | Marcar como inativo (coluna `ATIVO = 0`) ao invés de deletar | Quando precisa saber o que foi deletado |
+| **Full refresh periódico** | Limpar tudo e reimportar do zero periodicamente | Tabelas pequenas/médias — garante 100% de consistência |
+| **Comparar IDs** | Comparar IDs do ERP vs local, desativar os ausentes | Tabelas grandes onde reimportar tudo é inviável |
+
+> **Dica prática:** A abordagem mais comum é combinar **incremental a cada 30min** (traz novos e alterados) + **full refresh 1x por dia de madrugada** (limpa tudo e reimporta, pegando os deletados). Perguntar ao cliente se o ERP tem algum campo de "data de exclusão" ou flag de inativo — facilita muito.
+
 ### Regras críticas
 
 - **Nunca rodar o mesmo Data Loader em paralelo** — a tabela IMP_ é limpa a cada execução. Rodar duas vezes ao mesmo tempo causa perda de dados.
@@ -443,7 +458,7 @@ Cada gestor sobe um CSV por mês com os dados do seu CR. O novo arquivo substitu
 
 ## 9. Cron — agendamento automático
 
-O cron define **quando** as importações rodam automaticamente.
+O cron é um agendamento que é **configurado numa Server Function**. Ele define **quando** aquela SF roda automaticamente, sem ninguém precisar disparar. Qualquer SF (SQL, INTEGRATION ou JAVASCRIPT) pode ter um cron.
 
 | Exemplo | Significado |
 |---------|-------------|
