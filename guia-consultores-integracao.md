@@ -95,9 +95,9 @@ A IA vai:
 
 | Template | Quando usar |
 |----------|-------------|
-| `sankhya_gateway_mitra` | **Tentar primeiro** — funciona na maioria dos clientes |
-| `sankhya_oauth` | Quando o primeiro falha por autenticação (precisa gerar credenciais no Portal do Desenvolvedor Sankhya) |
-| `sankhya_oauth_sandbox` | Apenas para ambiente de homologação/testes |
+| `sankhya_gateway_mitra` | **Tentar primeiro** — apesar do nome, NÃO é o Gateway. Usa login direto com URL + usuário + senha. Funciona na maioria dos clientes |
+| `sankhya_oauth` | Este sim é o **Gateway do Sankhya**. Usar quando o primeiro falha por autenticação. Precisa de `client_id`, `client_secret` e `x_token` (gerados no Portal do Desenvolvedor Sankhya) |
+| `sankhya_oauth_sandbox` | Mesmas credenciais do `sankhya_oauth`, mas para ambiente de homologação/testes |
 
 > **Dica:** Para dashboards e análise de dados no Sankhya, o melhor endpoint é o `DbExplorerSP.executeQuery`. Ele aceita SQL direto, mas retorna no máximo 5.000 linhas por chamada.
 
