@@ -22,7 +22,7 @@ Server Functions são os "motores" que buscam e processam dados. Existem 3 tipos
 
 ### SF tipo SQL (a mais rápida — ~8ms)
 
-Roda uma query SQL direto no banco. Use para quase tudo.
+Roda uma query SQL direto no banco. Use para quase tudo. Aceita **SELECT, INSERT, UPDATE, DELETE** e também comandos como **LOAD DATA** (para importar CSV).
 
 **Quando usar:** consultas, filtros, inserções, atualizações, importação de CSV.
 
