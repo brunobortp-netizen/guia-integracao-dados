@@ -150,12 +150,57 @@ A IA vai:
 3. Testar a conexão
 4. Criar e começar a usar
 
-### Tipos de autenticação
+### Como funciona para o consultor
 
-| Tipo | Quando | Exemplo |
-|------|--------|---------|
-| **Chave fixa** (API Key, Bearer Token) | A maioria dos casos | "API key: abc123" |
-| **Login dinâmico** (OAuth, sessão) | Sistemas que geram token temporário | "Sankhya OAuth com client_id e secret" |
+O consultor não precisa escrever código. Ele precisa levantar as informações com o cliente e repassar para a IA:
+
+1. **Identificar o sistema externo** — Qual sistema o cliente quer integrar? (Sankhya, SAP, VTEX, Google Sheets, API própria, etc.)
+2. **Descobrir o tipo de autenticação** — A API usa chave fixa (API key, token permanente)? Ou exige login antes de cada uso (OAuth2, usuário/senha)?
+3. **Obter as credenciais com o cliente** — Dependendo do tipo: URL base da API, chave de acesso, client_id/secret, usuário/senha, refresh token, etc. O cliente (ou a TI dele) fornece essas informações.
+4. **Informar à IA e ela cria tudo** — Passe o sistema, as credenciais e o que o cliente quer ver/fazer com os dados. A IA cria a integração, as Server Functions tipo API e as telas automaticamente.
+
+> **Exemplo:** o consultor informou que queria integrar com Google Sheets e forneceu client_id, client_secret e refresh_token. A IA criou a integração OAuth2 completa, a Server Function de consulta e a tela de demonstração — tudo automático.
+
+### Tipos de autenticação — em profundidade
+
+Existem dois tipos de autenticação no Mitra:
+
+| Tipo | Nome técnico | Quando usar | Exemplos |
+|------|-------------|-------------|----------|
+| **Chave fixa** | `STATIC_KEY` | A API usa uma chave que não expira. O Mitra injeta a chave diretamente em cada request. | API Key, Bearer Token fixo, Basic Auth (usuário/senha fixos), múltiplos headers (VTEX) |
+| **Login dinâmico** | `DYNAMIC_TOKEN` | A API exige login para obter um token temporário. O Mitra faz o login automaticamente antes de cada request. | OAuth2 (Google, Microsoft), login com usuário/senha (Sankhya, ERPs), session cookie (SAP B1), JWT com refresh |
+
+### DYNAMIC_TOKEN — como funciona por dentro
+
+Com `DYNAMIC_TOKEN`, o Mitra executa **dois passos automáticos** antes de cada chamada à API:
+
+1. **Autenticação** (`authenticationConfig`) — faz a request de login na API e extrai o token da resposta
+2. **Autorização** (`authorizationConfig`) — injeta esse token na request real (header, cookie, query param)
+
+O mesmo mecanismo serve para cenários completamente diferentes:
+
+| Cenário | URL de login | O que envia | Onde o token está na resposta |
+|---------|-------------|-------------|------------------------------|
+| OAuth2 refresh_token (Google) | `oauth2.googleapis.com/token` | `grant_type=refresh_token` + credenciais | `$.access_token` |
+| OAuth2 client_credentials (Microsoft) | `login.microsoftonline.com/.../token` | `grant_type=client_credentials` + credenciais | `$.access_token` |
+| Login usuário/senha (Sankhya) | `meuserp.com/api/login` | `{ username, password }` | `$.responseBody.jsessionid.$` |
+| Login que retorna JWT (ERP genérico) | `api.erp.com/auth` | `{ email, password }` | `$.token` |
+| Session cookie (SAP B1) | `servidor:50000/b1s/v2/Login` | `{ CompanyDB, UserName, Password }` | `$.SessionId` |
+
+> Tudo diferente, tudo `DYNAMIC_TOKEN`. A única coisa que muda é a configuração.
+
+**`token_extraction`** — sempre obrigatório no DYNAMIC_TOKEN. É como o Mitra sabe **onde pegar o token** na resposta do login. Usa JSONPath — depende de como a API responde:
+
+- `$.access_token` — resposta tipo `{ "access_token": "xxx" }`
+- `$.token` — resposta tipo `{ "token": "xxx" }`
+- `$.data.jwt` — resposta tipo `{ "data": { "jwt": "xxx" } }`
+- `$.responseBody.jsessionid.$` — resposta aninhada (Sankhya)
+
+Cada API coloca o token num lugar diferente. O JSONPath aponta exatamente onde buscar.
+
+**`refresh_strategy`** — como renovar o token quando expira. Hoje a única opção é `re_authenticate`: quando o token expira, o Mitra executa o login inteiro de novo.
+
+> **Resumindo:** `STATIC_KEY` = chave fixa, nunca muda. `DYNAMIC_TOKEN` = precisa fazer login antes, qualquer tipo de login. O `authenticationConfig` é totalmente flexível — serve para OAuth2, login com senha, session cookie, JWT, qualquer coisa que retorne um token.
 
 ### Sankhya — tem 3 templates
 
