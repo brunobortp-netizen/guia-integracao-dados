@@ -549,17 +549,182 @@ Toda integração **deve ter uma tela de monitoramento** onde o cliente vê:
 
 ---
 
-## 12. Como pedir para a IA
+## 12. Como pedir integrações para o agente
 
-Alguns exemplos de como orientar a IA:
+### O princípio fundamental
 
-| Você diz | A IA entende |
-|----------|-------------|
-| "Conecta no banco Oracle do cliente" | Criar JDBC (e sugerir Tunnel se on-premise) |
-| "Integra com a API do Sankhya" | Criar Integração com template + SF INTEGRATION |
-| "Quero importar pedidos do ERP a cada 30 minutos" | Data Loader + SF de orquestração + cron |
-| "Os gestores vão subir CSV de orçamento todo mês" | Tela de upload + SF SQL com LOAD DATA |
-| "Quero ver os dados em tempo real" | SFs apontando direto pro JDBC externo |
-| "Cria uma tela pra acompanhar as importações" | Tela de gerenciamento com logs e status |
-| "Os dados do dash estão desatualizados" | Revisar cron, logs, erros de importação |
-| "Usa Tabela Online pra otimizar" | Centralizar JOINs + SFs referenciando @VW_ |
+O agente sabe como criar integrações, tabelas, SFs e telas. O que ele **não sabe** é o contexto do cliente: qual sistema, quais credenciais, quais dados o cliente quer ver e como quer atualizar.
+
+**Quanto mais contexto você der no pedido, melhor será o resultado na primeira tentativa.**
+
+### O que o agente faz com seu pedido — as 5 fases
+
+Quando você pede uma integração, o agente segue um protocolo de 5 fases:
+
+```
+Fase 1: Discovery        → Identifica fonte, tipo de acesso, levanta o que precisa saber
+Fase 2: Arquitetura      → Decide: tempo real, importação ou misto (apresenta prós/contras)
+Fase 3: Alinhamento      → Define queries, campos, deletados, cron, volume — pergunta TUDO
+Fase 4: Checkpoint        → Gera "Contrato de Integração" — só avança com sua confirmação
+Fase 5: Implementação    → Cria conexões, tabelas, SFs, crons, tela de logs, dashboards
+```
+
+> **Dica:** Quanto mais informação no pedido inicial, mais fases o agente pula automaticamente. Um pedido completo vai direto da Fase 1 para a Fase 4 sem perguntas intermediárias.
+
+### O Contrato de Integração — o que esperar
+
+Antes de escrever código, o agente gera um resumo com todas as decisões para sua aprovação:
+
+```
+╔══════════════════════════════════════════════════════╗
+║         CONTRATO DE INTEGRAÇÃO — RESUMO              ║
+╠══════════════════════════════════════════════════════╣
+║  FONTE: Sankhya OM (cliente XPTO)                    ║
+║  TIPO DE ACESSO: API REST (sankhya_gateway_mitra)    ║
+║  MODELO: Tempo Real                                  ║
+║                                                      ║
+║  ENTIDADES:                                          ║
+║  │ Vendas     │ ~50k  │ Tempo real │ N/A           │ ║
+║  │ Vendedores │ ~200  │ Tempo real │ N/A           │ ║
+║  │ Filiais    │ ~10   │ Tempo real │ N/A           │ ║
+║                                                      ║
+║  DASHBOARD: Vendas por mês, Top vendedores, Filtros  ║
+║                                                      ║
+║  Confirma que posso implementar seguindo este plano? ║
+╚══════════════════════════════════════════════════════╝
+```
+
+Se algo não está certo, diga — o agente ajusta antes de codar. O contrato evita retrabalho.
+
+### Pedir revisão de integrações existentes
+
+O agente não serve só para criar integrações novas. Você pode pedir para revisar, corrigir ou otimizar integrações existentes:
+
+- A importação está lenta ou falhando
+- Dados parecem incorretos ou desatualizados
+- Quer trocar de tempo real para importação (ou vice-versa)
+- Precisa adicionar novos campos ou tabelas
+- Quer melhorar o monitoramento (logs, alertas)
+
+O agente audita tudo que existe, compara com as boas práticas, lista os problemas e só implementa correções após sua confirmação.
+
+| Evite | Prefira |
+|-------|---------|
+| "A importação não tá funcionando" | "A importação de VENDAS está falhando com timeout. O Data Loader ID 5 roda com cron a cada 30min." |
+| "Melhora a integração" | "Revisa a integração com o Sankhya: dados com 2h de atraso e faltam registros deletados." |
+
+### Substituir dados sample por integração real
+
+É comum o projeto já ter dados fictícios e agora precisar conectar ao ERP real. Ao pedir, informe:
+
+1. Quais tabelas já existem e se podem ter os dados sample deletados
+2. Se existe tabela que NÃO deve ser limpa (ex: configurações)
+3. Credenciais da fonte real
+4. Se as colunas da tabela existente batem com os dados da fonte
+
+> O agente valida antes: executa a query com LIMIT, compara tipos, mostra um de-para visual e só importa após sua aprovação.
+
+### Checklist — o que ter em mãos antes de pedir
+
+| # | Informação | Exemplo |
+|---|-----------|---------|
+| 1 | **Qual sistema integrar?** | "Sankhya OM", "SAP B1 10.0", "API própria do cliente" |
+| 2 | **Como conectar?** | API REST? Banco (JDBC)? CSV? Se JDBC, qual tipo? |
+| 3 | **Credenciais** | URL, usuário/senha, API key, client_id/secret, tokens |
+| 4 | **Acessibilidade** | Internet ou on-premise? (se on-premise → Tunnel) |
+| 5 | **Quais dados?** | Tabelas, endpoints, campos importantes |
+| 6 | **O que o cliente quer ver?** | Dashboard, relatório, listagem, formulário |
+| 7 | **Modelo de consumo** | Tempo real, importação, misto |
+| 8 | **Volume e frequência** | Quantos registros? Atualizar a cada quanto? |
+| 9 | **Filtros** | Período, filial, vendedor, categoria |
+| 10 | **Queries ou docs** | Queries SQL prontas? Link da documentação da API? |
+
+> Não precisa ter tudo de uma vez. O agente pergunta o que faltar. Mas antecipar é mais rápido.
+
+### Pedidos bons vs pedidos vagos
+
+| Evite | Prefira |
+|-------|---------|
+| "Conecta no banco do cliente" | "Conecta no banco Oracle do cliente, IP 192.168.1.50, porta 1521. Preciso consultar vendas." |
+| "Faz uma integração com API" | "Integra com a API do sistema XYZ. Auth: API key no header. Key: abc123. Base URL: https://api.xyz.com" |
+| "Importa os dados do ERP" | "Importa CLIENTES e VENDAS do JDBC 2. VENDAS tem 500k registros e campo DT_ALTERACAO para incremental." |
+| "Cria um dashboard" | "Dashboard de vendas com: total mensal (gráfico de barras), top 10 vendedores, filtro por filial e período." |
+| "Configura o cron" | "Importação incremental a cada 30min e full refresh diário às 3h da manhã." |
+| "A importação não tá funcionando" | "A importação de VENDAS falha com timeout. Data Loader ID 5, cron a cada 30min, tabela tem 500k registros." |
+
+### Fluxo recomendado para integrações complexas
+
+```
+1. Conexão primeiro     → Crie a conexão (API ou JDBC) com credenciais. Teste antes de tudo.
+2. Dados e modelo       → Informe quais dados e se é tempo real ou importação.
+3. Resultado esperado   → Descreva o que o cliente quer ver (dashboard, telas, filtros).
+4. Regras de negócio    → "Vendas canceladas não contam", "filtrar por filial do logado", fórmulas.
+```
+
+> Pode pedir tudo de uma vez se já tem todas as informações. Separar em etapas só é necessário quando faltam dados.
+
+### Decisões que o agente vai perguntar (se você não informar)
+
+| O agente pergunta | Por quê | Como antecipar |
+|-------------------|---------|----------------|
+| Qual modelo de consumo? | Tempo real e importação têm arquiteturas diferentes | Informe se é tempo real, importação ou misto |
+| Credenciais de acesso? | Sem credenciais não cria a conexão | Inclua URL, usuário/senha ou API key |
+| Template Sankhya? | São 3 templates diferentes | Se souber a versão/config, informe |
+| Campo de data de alteração? | Importação incremental precisa | Informe se a tabela tem e qual é |
+| Registros deletados? | Afeta a sincronização | Informe se o sistema marca ou remove |
+| Frequência? | Define o cron | Informe (ex: a cada 30min, 1x/dia) |
+| Queries prontas? | Agiliza muito | Se tiver, cole. Se não, o agente monta |
+| Dados precisam de tratamento? | JOINs, cálculos, limpeza | Informe transformações necessárias |
+| Banco acessível pela internet? | On-premise precisa de Tunnel | Informe se está em rede interna |
+| Tabelas sample existentes? | Precisa validar tipos antes | Informe quais e se podem ser limpas |
+
+### Template rápido — copie e preencha
+
+```
+Preciso integrar com [NOME DO SISTEMA] do cliente [NOME DO CLIENTE].
+
+CONEXÃO:
+- Tipo: [API REST / Banco de dados (JDBC) / CSV]
+- URL/Endereço: [URL da API ou IP:porta do banco]
+- Credenciais: [usuário/senha, API key, client_id/secret etc.]
+- Tipo de banco (se JDBC): [Oracle / SQL Server / MySQL / PostgreSQL]
+
+DADOS:
+- Tabelas/Endpoints: [nomes das tabelas ou endpoints da API]
+- Campos importantes: [campos de filtro, data, identificação]
+- Volume estimado: [quantidade de registros]
+
+MODELO DE CONSUMO:
+- [ ] Tempo real
+- [ ] Importação periódica — Frequência: [a cada Xmin / 1x por dia]
+- [ ] Misto
+
+RESULTADO ESPERADO:
+- [Dashboard / Relatório / Listagem / Formulário]
+- Componentes: [gráficos, tabelas, KPIs, filtros]
+
+REGRAS DE NEGÓCIO:
+- [ex: "vendas canceladas não contam"]
+- [ex: "margem = receita - custo"]
+```
+
+### Erros comuns ao pedir integrações
+
+| Erro | Problema |
+|------|----------|
+| Pedir sem credenciais | O agente não pode inventar credenciais — peça ao cliente antes |
+| Não informar modelo de consumo | O agente vai pausar e perguntar — se você já sabe, informe |
+| Pedir "integra tudo" sem descrever resultado | Integrar é o meio — descreva o que o cliente quer **ver** |
+| Esquecer nomes de tabelas/campos | Se sabe que vendas é TGFCAB e filial é CODFILIAL, informe |
+| Não mencionar regras de negócio | "Canceladas não contam" afeta queries e cálculos |
+| Pedir importação sem informar volume | Milhões de registros sem batching vai dar timeout |
+
+### Resumo
+
+- **Forneça o máximo de contexto** no primeiro pedido
+- **Sempre inclua credenciais** — sem elas o agente não começa
+- **Descreva o resultado** que o cliente espera, não só a conexão
+- **Informe tabelas e campos** quando souber
+- **Mencione regras de negócio** que afetam queries
+- **Cole queries prontas** se tiver
+- O agente pergunta o que faltar — mas antecipar é mais rápido
