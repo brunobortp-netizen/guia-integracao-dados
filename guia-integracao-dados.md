@@ -22,7 +22,42 @@
 5. **Checkpoint:** Gerar o Contrato de Integração revisado (Fase 4) com todas as correções planejadas e pedir confirmação explícita
 6. **Só então:** Implementar as correções aprovadas
 
+### Checklist obrigatório de auditoria de integração existente
+
+Ao auditar uma integração existente, a IA DEVE verificar TODOS os itens abaixo e listar cada violação ao usuário:
+
+**🔴 Sinais críticos (perda de dados / problemas graves):**
+- [ ] **Uso de `listRecordsMitra` no frontend para dados de integração** → PROIBIDO. Esse método é só para CRUD simples de tabelas locais. Para integração, sempre usar SF tipo SQL/INTEGRATION com `executeServerFunctionMitra`
+- [ ] **Uso de `runQueryMitra` no frontend** → PROIBIDO em integrações. Frontend não deve executar SQL direto — usar SF tipo SQL com `executeServerFunctionMitra`
+- [ ] DELETE + INSERT na mesma tabela final sem atomicidade (sem ON DUPLICATE KEY UPDATE, shadow table ou flag de versão)
+- [ ] Mesmo Data Loader executado em paralelo (race condition na tabela IMP_)
+- [ ] Data Loader e upsert na MESMA SF JavaScript (estoura timeout de 300s)
+- [ ] SF JavaScript com `for` loop direto para iterar lotes de Data Loader
+- [ ] SF JavaScript fazendo SELECT externo + INSERT um a um em loop
+- [ ] Uso de `fetch`/`axios` direto em SF JavaScript para chamar APIs externas (deve usar SF INTEGRATION)
+- [ ] Tokens hardcoded no código das SFs
+
+**🟡 Sinais de qualidade (otimização / boas práticas):**
+- [ ] Falta de tela de monitoramento de logs
+- [ ] Dashboard sem indicador "Última atualização: há X minutos"
+- [ ] Múltiplas SFs com JOINs idênticos (deveria usar Tabela Online)
+- [ ] Data Loader sem parâmetros de batching para volumes grandes
+- [ ] Cron sem janela de baixo uso (full refresh em horário comercial)
+- [ ] Falta de coluna de cursor para incremental (ou cursor não confiável)
+- [ ] Não trata registros deletados na origem
+- [ ] Falta de logs personalizados em LOG_IMPORTACOES
+- [ ] Falta de tempos por etapa (ETAPAS_JSON) nos logs
+
+**🟢 Sinais de discovery incompleto:**
+- [ ] Dados sample misturados com dados reais
+- [ ] Tipos de coluna incompatíveis entre fonte e destino
+- [ ] Não foi alinhado modelo de consumo (real-time vs import)
+- [ ] Não foi alinhada estratégia de deletados
+- [ ] Não foi alinhada frequência do cron com o usuário
+
 > **PROIBIDO:** Ao receber pedido de revisão/correção, sair alterando código diretamente. SEMPRE auditar → listar → alinhar → checkpoint → implementar.
+
+> **PROIBIDO em integrações:** Os métodos `listRecordsMitra` e `runQueryMitra` (frontend) NÃO devem ser usados para consumir dados de integração. Eles existem apenas para CRUD simples de tabelas locais sem lógica. Toda integração deve ser consumida via Server Functions tipo SQL ou INTEGRATION, executadas com `executeServerFunctionMitra`. Ao auditar, este é um dos primeiros itens a verificar.
 
 ---
 

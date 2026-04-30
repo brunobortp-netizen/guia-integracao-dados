@@ -608,10 +608,36 @@ O agente não serve só para criar integrações novas. Você pode pedir para re
 
 O agente audita tudo que existe, compara com as boas práticas, lista os problemas e só implementa correções após sua confirmação.
 
+#### O que o agente vai procurar (e o que VOCÊ pode procurar também)
+
+Alguns problemas são tão graves que valem a pena conhecer mesmo sem ser técnico — você pode pedir explicitamente para o agente verificar:
+
+🔴 **Sinais críticos** (geram perda de dados ou bugs visíveis):
+- **Uso de `listRecordsMitra` ou `runQueryMitra` em integrações** — ESSES MÉTODOS NÃO PODEM SER USADOS para consumir dados de integração. Servem apenas para CRUD simples de tabelas locais. Toda integração deve passar por Server Function (tipo SQL ou INTEGRATION). Se você ver esses métodos sendo usados num projeto integrado, peça revisão imediata.
+- DELETE + INSERT sem proteção (usuário vê dados vazios entre as operações)
+- Mesmo Data Loader rodando em paralelo (perde dados na tabela temporária)
+- Data Loader e upsert na mesma Server Function JavaScript (estoura timeout)
+- Tokens/senhas escritos direto no código
+
+🟡 **Sinais de qualidade** (não quebra mas pode ser muito melhor):
+- Falta de tela de monitoramento de logs
+- Dashboard sem "Última atualização: há X minutos"
+- Várias SFs com os mesmos JOINs (deveria usar Tabela Online)
+- Data Loader sem batching para volumes grandes
+- Cron rodando full refresh em horário comercial
+
+🟢 **Sinais de alinhamento incompleto:**
+- Dados sample misturados com dados reais
+- Tipos de coluna incompatíveis entre origem e destino
+- Estratégia de registros deletados nunca foi discutida com o cliente
+
+> **Dica:** quando pedir revisão, mencione "verifica se tem `listRecordsMitra` ou `runQueryMitra` sendo usado para integração — esses métodos não podem aparecer aí". Esse é o problema mais comum em projetos antigos.
+
 | Evite | Prefira |
 |-------|---------|
 | "A importação não tá funcionando" | "A importação de VENDAS está falhando com timeout. O Data Loader ID 5 roda com cron a cada 30min." |
 | "Melhora a integração" | "Revisa a integração com o Sankhya: dados com 2h de atraso e faltam registros deletados." |
+| "Otimiza essa integração" | "Audita a integração e verifica se tem `listRecordsMitra`/`runQueryMitra` no frontend — se tiver, troca por Server Functions." |
 
 ### Substituir dados sample por integração real
 
